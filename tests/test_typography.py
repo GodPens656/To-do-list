@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 import unittest
 from contextlib import ExitStack
+from dataclasses import fields
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -15,15 +16,24 @@ from test_ui_state import make_front
 
 
 class TypographyTests(unittest.TestCase):
+    def assert_theme_font_family(self, theme, family):
+        expected = None if family == "default" else family
+        self.assertEqual(theme.font_family, expected)
+        for text_theme in (theme.text_theme, theme.primary_text_theme):
+            for slot in fields(ft.TextTheme):
+                self.assertEqual(getattr(text_theme, slot.name).font_family, expected)
+        self.assertEqual(theme.dropdown_theme.text_style.font_family, expected)
+
     def test_implicit_text_and_dropdowns_use_palette_after_font_changes(self):
         for style, _ in THEME_STYLE_OPTIONS:
             for dark in (False, True):
                 with self.subTest(style=style, dark=dark):
                     front = make_front(theme=style, dark=dark)
-                    for family in ("default", "Ubuntu"):
+                    for family in ("default", *FONT_ASSETS, "default"):
                         front.back2.redact_setting("font_family", family)
                         front._apply_page_theme()
                         theme = front.page.theme
+                        self.assert_theme_font_family(theme, family)
                         for slot in ("body_large", "body_medium", "title_medium", "label_large"):
                             self.assertEqual(
                                 getattr(theme.text_theme, slot).color, front.TxtColor
@@ -68,7 +78,7 @@ class TypographyTests(unittest.TestCase):
                 for target in ("Frontend.init_page.Cloud", "Backend.core.Cloud", "Backend.extended.Cloud"):
                     stack.enter_context(patch(target, return_value=front.cloud))
                 for setting, label, values in (
-                    ("font_family", "Шрифт", ("PT Sans", "PT Serif", "Ubuntu", "default")),
+                    ("font_family", "Шрифт", (*FONT_ASSETS, "default")),
                     ("font_size", "Размер текста", ("large", "small", "medium", "large")),
                 ):
                     for value in values:
@@ -78,6 +88,8 @@ class TypographyTests(unittest.TestCase):
                         selector.value = value
                         selector.on_select(None)
                         self.assertEqual(front.back2.read_settings()[setting], value)
+                        if setting == "font_family":
+                            self.assert_theme_font_family(front.page.theme, value)
                         self.assertEqual(front.current_group_id, "default")
                         self.assertEqual(len(front.back.read_tasks()), 1)
                 self.assertEqual(front.task_heading.size, round(normal_heading_size * 1.2, 2))

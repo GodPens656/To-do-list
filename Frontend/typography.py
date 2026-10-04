@@ -8,11 +8,13 @@ FONT_FAMILY_OPTIONS = (
     ("PT Sans", "PT Sans"),
     ("PT Serif", "PT Serif"),
     ("Ubuntu", "Ubuntu"),
+    ("MonoSpace", "MonoSpace (regular)"),
 )
 FONT_ASSETS = {
     "PT Sans": "fonts/PTSans-Regular.ttf",
     "PT Serif": "fonts/PTSerif-Regular.ttf",
     "Ubuntu": "fonts/Ubuntu-Regular.ttf",
+    "MonoSpace": "fonts/RobotoMono-Regular.ttf",
 }
 FONT_SIZE_OPTIONS = (
     ("small", "Маленький"),
@@ -56,9 +58,16 @@ def apply_typography(page, theme, family, size):
     scheme = theme.color_scheme
     def text_theme(color):
         return ft.TextTheme(**{
-            name: ft.TextStyle(size=scaled_text_size(page, base), color=color)
+            # Flet replaces each theme slot instead of merging it with the
+            # base style, so the selected family must be included here too.
+            name: ft.TextStyle(
+                size=scaled_text_size(page, base), color=color,
+                font_family=theme.font_family,
+            )
             for name, base in slots.items()
         })
 
     theme.text_theme = text_theme(scheme.on_surface if scheme else None)
     theme.primary_text_theme = text_theme(scheme.on_primary if scheme else None)
+    if theme.dropdown_theme and theme.dropdown_theme.text_style:
+        theme.dropdown_theme.text_style.font_family = theme.font_family

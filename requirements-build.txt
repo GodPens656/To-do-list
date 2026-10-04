@@ -1,0 +1,5 @@
+-r requirements.txt
+flet-cli==0.82.0
+pyinstaller==6.14.2
+# Optional YaDisk session explicitly included by build_windows.py.
+yadisk[aiohttp]==3.4.1

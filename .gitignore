@@ -1,0 +1,36 @@
+# Local credentials and private application data
+secret.py
+/saves/
+/settings/
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Generated bundles, logs and local preview tools
+/build/
+/dist/
+*.spec
+*.log
+*.encryption_tmp
+/.ui-preview/
+/.research/
+
+# Editor and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,9 @@
+Bundled static fonts with Cyrillic support, from Google Fonts:
+
+- PT Sans: https://github.com/google/fonts/tree/main/ofl/ptsans
+- PT Serif: https://github.com/google/fonts/tree/main/ofl/ptserif
+- Ubuntu: https://github.com/google/fonts/tree/main/ufl/ubuntu
+
+Each font's redistribution license is included alongside its TTF file.
+Distribute this entire directory as part of the application's assets directory,
+including in desktop and Android builds. No runtime downloads are needed.

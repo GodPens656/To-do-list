@@ -161,9 +161,6 @@ class Utils2:
         )
 
         """Содержимое диалогов для категорий, которые открываются отдельно"""
-        special_header, special_content, special_back, inf_btn, postponed_info_btn, postponed_btn = \
-            self.build_dialog_special_tasks(cmd_for_dlg, cmd_for_postponed_dlg, page)
-
         notifications_header, notifications_content, notifications_back = \
             self.build_dialog_notifications(
                 page,
@@ -177,12 +174,6 @@ class Utils2:
             'security': {'button': btn_security},
             'special': {
                 'button': btn_special,
-                'header': special_header,
-                'content': special_content,
-                'back': special_back,
-                'info_btn': inf_btn,
-                'postponed_info_btn': postponed_info_btn,
-                'postponed_btn': postponed_btn,
             },
             'notifications': {
                 'button': btn_notifications,
@@ -353,120 +344,91 @@ class Utils2:
             current, password, confirmation, save, status,
         ], spacing=12)
 
-    def build_dialog_special_tasks(self, cmd_for_dlg, cmd_for_postponed_dlg, page):
-        """Диалог категории 'Особые дела' с двумя выпадающими разделами."""
-        header = self.libs.create_style_header('Особые дела')
-
-        btn_add_daily = self.libs.build_button_with_image(
-            'plusS', 'Добавить повторяющееся дело', compact=False
+    def _build_special_task_list(self, repeating, cmd_create, cmd_info, page):
+        """Общие элементы списка для встроенного и отдельного диалога."""
+        title = 'Повторяющиеся дела' if repeating else 'Отложенные дела'
+        icon = ft.Icons.REPEAT_ROUNDED if repeating else ft.Icons.HOURGLASS_EMPTY_ROUNDED
+        add = self.libs.build_button_with_image(
+            'plusS',
+            'Добавить повторяющееся дело' if repeating else 'Добавить отложенное дело',
+            compact=False,
         )
-        btn_add_daily.on_click = lambda e: cmd_for_dlg()
-
-        inf_btn = self.libs.build_button_with_image(
-            'info', 'Подсказка по повторяющимся делам', compact=False
+        add.on_click = lambda e: cmd_create()
+        info = self.libs.build_button_with_image(
+            'info',
+            'Подсказка по повторяющимся делам' if repeating else 'Подсказка по отложенным делам',
+            compact=False,
         )
-
-        title_repeating_task = ft.Row(
-            [
-                self.libs.create_style_section_title(
-                    ft.Icons.REPEAT_ROUNDED,
-                    'Повторяющиеся дела',
-                    size=15,
-                    icon_color=ft.Colors.WHITE,
-                ),
-                btn_add_daily,
-                inf_btn,
-            ],
-            scroll=ft.ScrollMode.AUTO,
-        )
-
-        self.cont_with_repeat_task = ft.Container(
-            content=ft.Column([], 
-                scroll=ft.ScrollMode.AUTO, 
-                height=page.height*0.45),
-
+        info.on_click = lambda e: cmd_info()
+        toolbar = ft.Row([
+            self.libs.create_style_section_title(
+                icon, title, size=15, icon_color=ft.Colors.WHITE,
+            ),
+            add,
+            info,
+        ], scroll=ft.ScrollMode.AUTO)
+        tasks = ft.Container(
+            content=ft.Column([], scroll=ft.ScrollMode.AUTO, height=page.height * 0.45),
             bgcolor=self.ContBgColor,
             border=ft.Border.all(0.5, self.BorderColor),
             border_radius=10,
             padding=self.padding,
-            width=self.libs.width_dialogs * 0.95
+            width=self.libs.width_dialogs * 0.95,
         )
-        self.read_repeat_tasks_and_add_to_cont()
+        if repeating:
+            self.cont_with_repeat_task = tasks
+            self.read_repeat_tasks_and_add_to_cont()
+        else:
+            self.cont_with_postponed_task = tasks
+            self.read_postponed_tasks_and_add_to_cont()
+        return title, icon, toolbar, tasks
 
-        btn_add_postponed = self.libs.build_button_with_image(
-            'plusS', 'Добавить отложенное дело', compact=False
+    def build_dialog_special_task_list(self, repeating, cmd_create, cmd_info, page):
+        title, _, toolbar, tasks = self._build_special_task_list(
+            repeating, cmd_create, cmd_info, page,
         )
-        btn_add_postponed.on_click = lambda e: cmd_for_postponed_dlg()
-
-        postponed_info_btn = self.libs.build_button_with_image(
-            'info', 'Подсказка по отложенным делам', compact=False
-        )
-
-        title_postponed_task = ft.Row(
-            [
-                self.libs.create_style_section_title(
-                    ft.Icons.HOURGLASS_EMPTY_ROUNDED,
-                    'Отложенные дела',
-                    size=15,
-                    icon_color=ft.Colors.WHITE,
-                ),
-                btn_add_postponed,
-                postponed_info_btn,
-            ],
-            scroll=ft.ScrollMode.AUTO,
+        tasks.content.height = None
+        tasks.expand = True
+        back = self.libs.create_style_button('Назад')
+        content = self.libs.create_style_cont([toolbar, tasks, back])
+        content.content.scroll = None
+        return (
+            self.libs.create_style_header(title),
+            content,
+            back,
         )
 
-        self.cont_with_postponed_task = ft.Container(
-            content=ft.Column([], 
-                scroll=ft.ScrollMode.AUTO, 
-                height=page.height*0.45),
-
-            bgcolor=self.ContBgColor,
-            border=ft.Border.all(0.5, self.BorderColor),
-            border_radius=10,
-            padding=self.padding,
-            width=self.libs.width_dialogs * 0.95
+    def build_dialog_special_tasks(
+        self, cmd_for_dlg, cmd_for_postponed_dlg, page,
+        cmd_open_list, cmd_repeat_info, cmd_postponed_info,
+    ):
+        """Строит раздел по актуальной настройке при каждом открытии."""
+        blocks = []
+        separate_dialogs = self.back2.read_settings()['special_tasks_separate_dialogs']
+        for repeating, title, icon, cmd_create, cmd_info in (
+            (True, 'Повторяющиеся дела', ft.Icons.REPEAT_ROUNDED,
+             cmd_for_dlg, cmd_repeat_info),
+            (False, 'Отложенные дела', ft.Icons.HOURGLASS_EMPTY_ROUNDED,
+             cmd_for_postponed_dlg, cmd_postponed_info),
+        ):
+            if separate_dialogs:
+                button = self.libs.create_style_category_button(icon, title)
+                button.on_click = lambda e, repeat=repeating: cmd_open_list(repeat)
+                blocks.append(button)
+            else:
+                _, _, toolbar, tasks = self._build_special_task_list(
+                    repeating, cmd_create, cmd_info, page,
+                )
+                section = self.libs.create_style_expansion_category(
+                    icon, title, [tasks], padding=1,
+                )
+                blocks.append(ft.Column([toolbar, section], spacing=10))
+        back = self.libs.create_style_button('Назад')
+        return (
+            self.libs.create_style_header('Особые дела'),
+            self.libs.create_style_cont([*blocks, back]),
+            back,
         )
-        self.read_postponed_tasks_and_add_to_cont()
-
-        repeating_section = self.libs.create_style_expansion_category(
-            ft.Icons.REPEAT_ROUNDED,
-            'Повторяющиеся дела',
-            [self.cont_with_repeat_task],
-            padding=1
-        )
-        postponed_section = self.libs.create_style_expansion_category(
-            ft.Icons.HOURGLASS_EMPTY_ROUNDED,
-            'Отложенные дела',
-            [self.cont_with_postponed_task],
-            padding=1
-        )
-
-        repeating_block = ft.Column(
-            [
-                title_repeating_task,
-                repeating_section,
-            ],
-            spacing=10,
-        )
-        postponed_block = ft.Column(
-            [
-                title_postponed_task,
-                postponed_section,
-            ],
-            spacing=10,
-        )
-        back_btn = self.libs.create_style_button('Назад')
-
-        content = self.libs.create_style_cont(
-            [
-                repeating_block,
-                postponed_block,
-                back_btn,
-            ],
-        )
-
-        return header, content, back_btn, inf_btn, postponed_info_btn, btn_add_postponed
 
     def build_widgets_for_management_tasks(self, cmd_rebuild_widgets):
         """Виджеты для управления делами"""
@@ -793,6 +755,21 @@ class Utils2:
             "load_screen", switch2.value
         )
 
+        separate_dialogs_switch = ft.Switch(
+            value=sets["special_tasks_separate_dialogs"],
+        )
+        separate_dialogs_switch.on_change = lambda e: self.back2.redact_setting(
+            "special_tasks_separate_dialogs", separate_dialogs_switch.value,
+        )
+        separate_dialogs_row = ft.Row([
+            ft.Text(
+                "Открытие списка повторяющихся и отложенных как отдельные диалоги",
+                color=self.TxtColor,
+                width=self.width_dialogs * 0.62,
+            ),
+            separate_dialogs_switch,
+        ])
+
         switch3 = ft.Switch(value=group_sets["split_by_dates"])
 
         def change_split_by_dates(e):
@@ -860,7 +837,9 @@ class Utils2:
         if self.phone and self.web:
             row4.scroll = ft.ScrollMode.AUTO
         return ft.Container(
-            content=ft.Column([row1, row2, row3, row4, title_row, counter_row])
+            content=ft.Column([
+                row1, row2, separate_dialogs_row, row3, row4, title_row, counter_row,
+            ])
         )
 
     def build_widgets_for_customization(self):

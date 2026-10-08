@@ -319,6 +319,7 @@ class Backend2:
             "notes_accepted": "False",
             "border": "False",
             "load_screen": "True",
+            "special_tasks_separate_dialogs": "False",
             "theme_style": "chatgpt",
             "font_family": "default",
             "font_size": "medium",
@@ -362,6 +363,7 @@ class Backend2:
             "notes_accepted",
             "border",
             "load_screen",
+            "special_tasks_separate_dialogs",
             "theme_style",
             "font_family",
             "font_size",
@@ -501,6 +503,9 @@ class Backend2:
             'border': self._to_bool(settings.get("border", "False")),
             'notes_accepted': self._to_bool(settings.get("notes_accepted", "False")),
             'load_screen': self._to_bool(settings.get("load_screen", "True")),
+            'special_tasks_separate_dialogs': self._to_bool(
+                settings.get("special_tasks_separate_dialogs", "False")
+            ),
             'theme_style': (
                 normalize_theme_style(settings.get("theme_style", "chatgpt"))
             ),

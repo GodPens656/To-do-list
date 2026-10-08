@@ -1335,19 +1335,7 @@ class Front(NotesMixin):
         special = dialogs["special"]
         self.utils2.on_edit_repeat = self.open_edit_repeat_dialog
         self.utils2.on_edit_postponed = self.open_edit_postponed_dialog
-        special["button"].on_click = lambda e: self.open_modified_dialog2(
-            special["header"], special["content"], special["back"]
-        )
-        # Инфо возле ежедневных дел (открывается поверх окна 'Особые дела')
-        special["info_btn"].on_click = lambda e: self.open_modified_dialog3(
-            *self.main_widgets.dialog_for_info_repeat()
-        )
-
-
-        special['postponed_info_btn'].on_click = lambda e: self.open_modified_dialog3(
-            *self.main_widgets.dialog_for_info_postponed()
-        )
-        special["postponed_btn"].on_click = lambda e: self.open_postponed_dialog()
+        special["button"].on_click = lambda e: self.open_special_tasks()
 
         # «Управление делами» и «Общие настройки» теперь ExpansionTile:
         # их содержимое уже встроено в окно настроек, on_click не нужен.
@@ -1386,6 +1374,31 @@ class Front(NotesMixin):
         )
         if self.web:
             self._settings_screens[group_id] = settings_screen
+
+    def _open_special_task_info(self, repeating):
+        build_info = (
+            self.main_widgets.dialog_for_info_repeat if repeating
+            else self.main_widgets.dialog_for_info_postponed
+        )
+        self.open_modified_dialog3(*build_info())
+
+    def open_special_tasks(self):
+        self.utils2.on_edit_repeat = self.open_edit_repeat_dialog
+        self.utils2.on_edit_postponed = self.open_edit_postponed_dialog
+        self.open_modified_dialog2(*self.utils2.build_dialog_special_tasks(
+            self.open_repeat_dialog, self.open_postponed_dialog, self.page,
+            self.open_special_task_list,
+            lambda: self._open_special_task_info(True),
+            lambda: self._open_special_task_info(False),
+        ))
+
+    def open_special_task_list(self, repeating):
+        self.open_modified_dialog3(*self.utils2.build_dialog_special_task_list(
+            repeating,
+            self.open_repeat_dialog if repeating else self.open_postponed_dialog,
+            lambda: self._open_special_task_info(repeating),
+            self.page,
+        ))
 
     def create_group_dropdown(self):
         groups = [g for g in self.back.get_groups() if g['type'] == 'tasks']

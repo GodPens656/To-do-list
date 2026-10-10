@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app_paths import get_assets_dir
+from Backend.app_paths import get_assets_dir
 
 
 class AssetsPathTests(unittest.TestCase):
@@ -38,8 +38,23 @@ class AssetsPathTests(unittest.TestCase):
     def test_environment_override_takes_precedence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            with patch.dict(os.environ, {"ND_ASSETS_DIR": str(root)}):
+            with patch.dict(os.environ, {
+                "ND_ASSETS_DIR": str(root),
+                "FLET_ASSETS_DIR": str(root / "flet-assets"),
+            }, clear=True):
                 self.assertEqual(get_assets_dir(), root)
+
+    def test_flet_assets_can_be_outside_python_app_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            assets = Path(directory).resolve() / "flutter_assets" / "assets"
+            with patch.dict(os.environ, {"FLET_ASSETS_DIR": str(assets)}, clear=True):
+                self.assertEqual(get_assets_dir(), assets)
+
+    def test_empty_flet_assets_uses_source_directory(self):
+        with patch.dict(os.environ, {"FLET_ASSETS_DIR": ""}, clear=True):
+            self.assertEqual(
+                get_assets_dir(), Path(__file__).resolve().parents[1] / "assets"
+            )
 
 
 if __name__ == "__main__":

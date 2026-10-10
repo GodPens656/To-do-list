@@ -3,7 +3,7 @@ import threading
 from datetime import date, datetime, timezone
 
 import flet as ft
-from app_paths import get_assets_dir
+from Backend.app_paths import get_assets_dir
 from Backend.core import Backend
 from Backend.extended import Backend2
 from Backend.validation import text_length_error

@@ -2,7 +2,7 @@ from Frontend.init_page import Front
 import flet as ft
 from Backend.webstorage import WebSessionStore
 from urllib.parse import parse_qs, urlsplit
-from app_paths import get_assets_dir
+from Backend.app_paths import get_assets_dir
 
 
 def _set_browser_timezone(page):

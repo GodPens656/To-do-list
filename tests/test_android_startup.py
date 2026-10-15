@@ -40,8 +40,7 @@ from unittest.mock import patch
 sys.path.insert(0, sys.argv[1])
 assert importlib.util.find_spec("app_paths") is None
 secret = ModuleType("secret")
-secret.MEGA_EMAIL = "test@example.invalid"
-secret.MEGA_PASSWORD = "test-only-password"
+secret.DROPBOX_ACCESS_TOKEN = "test-only-token"
 secret.ENCRYPTION_KEYWORD = "test-only encryption phrase"
 sys.modules["secret"] = secret
 with patch("flet.run") as run:

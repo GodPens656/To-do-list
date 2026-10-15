@@ -39,9 +39,9 @@ class SecretConfigurationTests(unittest.TestCase):
         with self.assertRaises(other.EncryptedFileError):
             other.decrypt_bytes(encrypted)
 
-    def test_disk_client_is_lazy_and_uses_mega(self):
+    def test_disk_client_is_lazy_and_uses_dropbox(self):
         cloud = Cloud.__new__(Cloud)
-        with patch("Backend.cloud.MegaDisk") as client:
+        with patch("Backend.cloud.DropboxDisk") as client:
             self.assertIs(cloud.initizialise_disk(), client.return_value)
         client.assert_called_once_with()
 

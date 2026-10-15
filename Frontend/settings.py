@@ -103,7 +103,7 @@ class Utils2:
         и "Подписывать дату создания дел" относятся именно к ней и
         хранятся в itog.json у самой группы. command_for_rebuild_tasks —
         лёгкая перестройка виджетов списка дел без синхронизации с
-        MEGA, используется именно для этих двух настроек
+        Dropbox, используется именно для этих двух настроек
         и кнопок раздела "управление делами"."""
 
         btn_nazad = self.libs.create_style_button('Назад')
@@ -457,7 +457,7 @@ class Utils2:
             "Отправить бэкап", ft.Icons.CLOUD_UPLOAD_ROUNDED
         )
         backup_status = ft.Text(
-            "Копия сохранённых в MEGA дел — один раз в календарный день.",
+            "Копия сохранённых в Dropbox дел — один раз в календарный день.",
             size=self.libs.text_size(12),
             color=self.TxtColor,
         )
@@ -477,7 +477,7 @@ class Utils2:
                 if self.cloud.read_user_data_text().split("~~")[0].strip() != account:
                     backup_status.value = "Аккаунт изменился. Повторите отправку."
                 elif created:
-                    backup_status.value = "Бэкап отправлен в MEGA. Следующий доступен завтра."
+                    backup_status.value = "Бэкап отправлен в Dropbox. Следующий доступен завтра."
                 else:
                     backup_status.value = "Бэкап за сегодня уже есть. Повторная отправка доступна завтра."
             except Exception:

@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from download_cloud import CLOUD_ROOT, MANIFEST_NAME, download_tree, main
-from Backend.mega_disk import load_mega_credentials
+from Backend.dropbox_disk import load_dropbox_credentials
 
 
 def resource(name, kind="file", payload=b""):
@@ -108,20 +108,10 @@ class DownloadCloudTests(unittest.TestCase):
             self.assertEqual(path.parent, self.output)
             self.assertEqual(path.read_bytes(), str(i).encode())
 
-    def test_environment_credentials_and_empty_password(self):
-        with patch.dict(os.environ, {"MEGA_EMAIL": " test@example.invalid ",
-                                     "MEGA_PASSWORD": " test-password "}):
-            values = load_mega_credentials()
-            self.assertEqual(values["MEGA_EMAIL"], "test@example.invalid")
-            self.assertEqual(values["MEGA_PASSWORD"], " test-password ")
-        with patch.dict(os.environ, {"MEGA_EMAIL": "test@example.invalid", "MEGA_PASSWORD": " "}):
-            with self.assertRaises(ValueError):
-                load_mega_credentials()
-
     def test_cli_failure_does_not_print_private_network_error(self):
         stderr = io.StringIO()
-        with patch("Backend.mega_disk.load_mega_credentials"), \
-                patch("Backend.mega_disk.MegaDisk") as client, \
+        with patch("Backend.dropbox_disk.load_dropbox_credentials"), \
+                patch("Backend.dropbox_disk.DropboxDisk") as client, \
                 patch("download_cloud.download_tree", side_effect=TimeoutError("private-token")), \
                 patch("sys.stderr", stderr), patch("sys.stdout", io.StringIO()):
             self.assertEqual(main(["--output", str(self.output)]), 1)

@@ -1,7 +1,7 @@
 # Versions from the project's working Python 3.13 environment.
 flet[desktop,web]==0.82.0
 flet-color-pickers==0.82.0
-mega.py-v2==2.1.0
+dropbox==12.0.2
 cryptography==48.0.0
 Pillow==11.3.0
 requests==2.32.5

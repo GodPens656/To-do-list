@@ -1916,7 +1916,7 @@ class Front(NotesMixin):
                 vosvr = await asyncio.to_thread(self.cloud.alg_for_login, login, password)
             except Exception:
                 self.libs.open_dialog(
-                    "Авторизация", "Не удалось подключиться к MEGA. Проверьте настройки хранилища и интернет.",
+                    "Авторизация", "Не удалось подключиться к Dropbox. Проверьте настройки хранилища и интернет.",
                     self.page,
                 )
                 return
@@ -1957,7 +1957,7 @@ class Front(NotesMixin):
                 )
             except Exception:
                 self.libs.open_dialog(
-                    "Авторизация", "Не удалось подключиться к MEGA. Проверьте настройки хранилища и интернет.",
+                    "Авторизация", "Не удалось подключиться к Dropbox. Проверьте настройки хранилища и интернет.",
                     self.page,
                 )
                 return

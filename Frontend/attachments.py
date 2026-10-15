@@ -1,5 +1,6 @@
 """Attachment editor and shared preview/download buttons."""
 
+import asyncio
 from copy import deepcopy
 from pathlib import Path
 
@@ -20,6 +21,26 @@ def file_picker(page):
             page.services.append(picker)
         page.update()
     return picker
+
+
+def prepare_attachments(selected, existing, *, web):
+    """Validate metadata before reading local files; keep reads bounded."""
+    for item in selected:
+        if item.size and item.size > MAX_FILE_BYTES:
+            raise ValueError("Размер одного файла не должен превышать 10 МБ.")
+    pending = []
+    total = sum(item.get("size", 0) for item in existing)
+    for item in selected:
+        content = item.bytes
+        if not web and item.path:
+            with Path(item.path).open("rb") as source:
+                content = source.read(MAX_FILE_BYTES + 1)
+        attachment = make_attachment(item.name, content)
+        total += attachment["size"]
+        if total > MAX_TASK_BYTES:
+            raise ValueError("Общий размер вложений дела не должен превышать 20 МБ.")
+        pending.append(attachment)
+    return pending
 
 
 def attachment_controls(libs, attachments, on_remove=None):
@@ -135,27 +156,23 @@ class AttachmentEditor:
         self.libs.page.update()
 
     async def pick(self, _):
+        if self.add.disabled:
+            return
         self.add.disabled = True
         self.error.visible = False
         self.libs.page.update()
         try:
             selected = await file_picker(self.libs.page).pick_files(
-                dialog_title="Прикрепить файлы к делу", allow_multiple=True, with_data=True,
+                dialog_title="Прикрепить файлы к делу", allow_multiple=True,
+                # Native paths are readable by Python. Sending file bytes through
+                # Flet first can stall/disconnect the client before size validation.
+                with_data=self.libs.page.web,
             )
-            pending = []
-            total = sum(item.get("size", 0) for item in self.attachments)
-            for item in selected:
-                if item.size and item.size > MAX_FILE_BYTES:
-                    raise ValueError("Размер одного файла не должен превышать 10 МБ.")
-                content = item.bytes
-                if content is None and item.path and not self.libs.page.web:
-                    with Path(item.path).open("rb") as source:
-                        content = source.read(MAX_FILE_BYTES + 1)
-                attachment = make_attachment(item.name, content)
-                total += attachment["size"]
-                if total > MAX_TASK_BYTES:
-                    raise ValueError("Общий размер вложений дела не должен превышать 20 МБ.")
-                pending.append(attachment)
+            if not selected:
+                return
+            pending = await asyncio.to_thread(
+                prepare_attachments, selected, self.values(), web=self.libs.page.web,
+            )
             if self.back is not None:
                 self.back.validate_attachment_selection(
                     self.attachments + pending, self.task_id, self.section,

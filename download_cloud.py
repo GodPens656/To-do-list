@@ -1,4 +1,4 @@
-"""Скачать всё дерево /For_to-do из MEGA без запуска приложения."""
+"""Скачать всё дерево /For_to-do из Dropbox без запуска приложения."""
 
 import argparse
 import hashlib
@@ -75,7 +75,7 @@ def download_file(disk, cloud_path, target, resource):
 
 
 def download_tree(disk, output, report=print):
-    """Обходит дерево MEGA и сохраняет даже пустые каталоги."""
+    """Обходит дерево Dropbox и сохраняет даже пустые каталоги."""
     root = disk.get_meta(CLOUD_ROOT)
     if root.type != "dir":
         raise ValueError("/For_to-do в облаке должен быть папкой.")
@@ -128,14 +128,14 @@ def main(argv=None):
     )
     try:
         try:
-            from Backend.mega_disk import MegaDisk, load_mega_credentials
+            from Backend.dropbox_disk import DropboxDisk, load_dropbox_credentials
         except ModuleNotFoundError as exc:
-            if exc.name not in ("mega", "Crypto", "httpx"):
+            if exc.name != "dropbox":
                 raise
-            raise ValueError('Установите зависимость: python -m pip install "mega.py-v2==2.1.0"') from exc
-        load_mega_credentials()
-        print("Скачивание /For_to-do/ из MEGA…")
-        with MegaDisk() as disk:
+            raise ValueError('Установите зависимость: python -m pip install "dropbox==12.0.2"') from exc
+        load_dropbox_credentials()
+        print("Скачивание /For_to-do/ из Dropbox…")
+        with DropboxDisk() as disk:
             files, folders, total_bytes = download_tree(disk, output)
     except KeyboardInterrupt:
         print("Скачивание прервано. Копия неполная.", file=sys.stderr)

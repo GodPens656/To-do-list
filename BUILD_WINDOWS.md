@@ -1,7 +1,7 @@
 # Сборка .exe для Windows
 
 Перед сборкой создайте и настройте `secret.py` по [README.md](README.md).
-PyInstaller включает этот модуль вместе с данными входа MEGA и ключевым словом в
+PyInstaller включает этот модуль вместе с токенами Dropbox и ключевым словом в
 готовое приложение. Такую сборку нельзя публиковать с личными секретами.
 
 Из папки проекта, в том же Python-окружении, где запускается приложение:
@@ -10,8 +10,8 @@ PyInstaller включает этот модуль вместе с данным�
 python build_windows.py
 ```
 
-Готовое приложение: `dist/Dnevnik/Dnevnik.exe`. Для передачи на другой
-компьютер скопируйте всю папку `dist/Dnevnik`.
+Готовое приложение: `dist/To-do list/To-do list.exe`. Для передачи на другой
+компьютер скопируйте всю папку `dist/To-do list`.
 
 Для сборки в один файл:
 
@@ -19,7 +19,7 @@ python build_windows.py
 python build_windows.py --onefile
 ```
 
-Результат: `dist/Dnevnik.exe`.
+Результат: `dist/To-do list.exe`.
 
 Если зависимости сборки отсутствуют:
 
@@ -30,7 +30,7 @@ python -m pip install -r requirements-build.txt
 Версии пакетов `flet`, `flet-cli` и `flet-desktop` должны совпадать.
 Зависимости приложения также должны быть установлены в этом окружении.
 
-В сборку явно включаются динамический импорт `mega.hashcash`,
+В сборку явно включаются динамический импорт `secret`,
 `plyer.platforms`, Windows-уведомления Plyer и `flet_desktop`.
 Для `--hidden-import` используется имя Python-модуля `flet_desktop`,
 а для установки через pip — имя пакета `flet-desktop`.
@@ -46,9 +46,9 @@ python -m pip install -r requirements-build.txt
 проверяется содержимое архива .exe.
 
 Для повторной сборки запускайте `build_windows.py`: автоматически созданный
-`build/Dnevnik.spec` содержит путь к временной копии клиента и не предназначен
+`build/To-do list.spec` содержит путь к временной копии клиента и не предназначен
 для самостоятельного запуска. В режиме одной папки переносите всю
-`dist/Dnevnik`, включая `_internal`.
+`dist/To-do list`, включая `_internal`.
 
 `assets/dnevnik.ico` — настоящий ICO с размерами 16–256 px.
 Исходное изображение сохранено в `assets/dnevnik.png`.

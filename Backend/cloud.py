@@ -3,7 +3,8 @@ import io
 import json
 import hashlib
 from pathlib import Path
-from .mega_disk import MegaDisk, is_retryable_error, load_mega_credentials
+import requests
+from .dropbox_disk import DropboxDisk, is_retryable_error, DropboxDiskError
 import time
 import threading
 from datetime import date, datetime, timedelta
@@ -23,7 +24,6 @@ from .json_migration import (
     load_data_from_dict,
     migrate_legacy_storage,
 )
-import requests
 from .crypto import (
     data_encryption_enabled,
     decrypt_bytes,
@@ -150,16 +150,16 @@ class Cloud:
 
 
     def initizialise_disk(self):
-        """MEGA авторизуется при первом облачном запросе."""
-        return MegaDisk()
+        """Dropbox авторизуется при первом облачном запросе."""
+        return DropboxDisk()
 
     def check_connect(self):
-        """Проверка подключения к интернету"""
+        """Проверяет доступ к dropbox.com без авторизации в Dropbox API."""
         try:
-            load_mega_credentials()
-            requests.get("https://g.api.mega.co.nz/cs", timeout=(5, 10))
+            with requests.get("https://dropbox.com", timeout=5, stream=True) as response:
+                response.raise_for_status()
             return True
-        except (requests.RequestException, ValueError):
+        except requests.RequestException:
             return False
 
 
@@ -183,7 +183,7 @@ class Cloud:
             pass
 
     def cloud_path(self, *parts):
-        """Собирает путь в MEGA с ведущим слешем."""
+        """Собирает путь в Dropbox с ведущим слешем."""
         cleaned = [str(part).strip("/") for part in parts if str(part).strip("/")]
         return "/" + "/".join(cleaned)
 
@@ -219,7 +219,7 @@ class Cloud:
         return self.disk.exists(path)
 
     def create_folder_on_cloud(self, path):
-        """Создает папку в MEGA, если ее еще нет."""
+        """Создает папку в Dropbox, если ее еще нет."""
         try:
             self.disk.mkdir(path)
         except FileExistsError:
@@ -234,8 +234,8 @@ class Cloud:
         return hashlib.sha256(payload).hexdigest()
 
     def _account_key(self, login_password):
-        # Отметки старого провайдера не подтверждают загрузку в MEGA.
-        return self._fingerprint(("mega:" + login_password).encode("utf-8"))
+        # Отметки старого провайдера не подтверждают загрузку в Dropbox.
+        return self._fingerprint(("dropbox:" + login_password).encode("utf-8"))
 
     def _load_sync_state(self):
         try:

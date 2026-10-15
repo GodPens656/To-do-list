@@ -8,8 +8,11 @@ import tempfile
 from pathlib import Path
 
 
+APP_NAME = "To-do list"
+
+
 HIDDEN_IMPORTS = (
-    "mega.hashcash",
+    "secret",  # Credentials are loaded dynamically by the cloud transport.
     "plyer.platforms",
     "plyer.platforms.win",
     "plyer.platforms.win.notification",
@@ -69,7 +72,8 @@ def main():
     # Меняем только копию: установленный flet-desktop не затрагивается.
     previous_cwd = Path.cwd()
     previous_bin_dir = hook_config.temp_bin_dir
-    executable = root / "dist" / ("Dnevnik.exe" if args.onefile else "Dnevnik/Dnevnik.exe")
+    output_dir = root / "dist" if args.onefile else root / "dist" / APP_NAME
+    executable = output_dir / f"{APP_NAME}.exe"
     with tempfile.TemporaryDirectory(prefix="dnevnik-build-") as temporary:
         copied_client = Path(temporary) / "app"
         shutil.copytree(client_dir, copied_client)
@@ -83,7 +87,7 @@ def main():
             ]
             run([
                 str(root / "main.py"),
-                "--name=Dnevnik",
+                f"--name={APP_NAME}",
                 "--windowed",
                 "--onefile" if args.onefile else "--onedir",
                 "--noconfirm",

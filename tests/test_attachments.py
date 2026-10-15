@@ -1,7 +1,9 @@
 import asyncio
 from io import BytesIO
 import tempfile
+import threading
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -10,7 +12,7 @@ import flet as ft
 from PIL import Image
 
 from Backend.attachments import (
-    MAX_ACCOUNT_BYTES, AttachmentQuotaError, attachment_bytes, attachment_usage,
+    MAX_ACCOUNT_BYTES, MAX_FILE_BYTES, AttachmentQuotaError, attachment_bytes, attachment_usage,
     image_preview, make_attachment,
 )
 from Backend.core import Backend
@@ -250,6 +252,117 @@ class AttachmentTests(unittest.TestCase):
             self.assertEqual(editor.values(), [existing])
             self.assertFalse(editor.add.disabled)
         self.assertTrue(editor.error.visible)
+
+    def test_native_oversized_zip_is_rejected_before_reading_and_can_retry(self):
+        front = make_front()
+        front.page.web = False
+        front.page.services = []
+        existing = make_attachment("first.txt", b"first")
+        editor = AttachmentEditor(front.libs, [existing])
+        front.page.run_task.reset_mock()
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "large.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("data.bin", b"x" * MAX_FILE_BYTES)
+            selected = SimpleNamespace(
+                name=archive_path.name, size=archive_path.stat().st_size,
+                path=str(archive_path), bytes=None,
+            )
+            self.assertGreater(selected.size, MAX_FILE_BYTES)
+            with patch.object(ft.FilePicker, "pick_files", new=AsyncMock(return_value=[selected])) as pick:
+                with patch("Frontend.attachments.Path.open") as read:
+                    asyncio.run(editor.pick(None))
+                read.assert_not_called()
+                self.assertFalse(pick.call_args.kwargs["with_data"])
+            self.assertEqual(editor.values(), [existing])
+            self.assertTrue(editor.error.visible)
+            self.assertIn("10 МБ", editor.error.value)
+            self.assertFalse(editor.add.disabled)
+            front.page.run_task.assert_not_called()
+
+            archive_path.write_bytes(b"small file")
+            selected.size = archive_path.stat().st_size
+            with patch.object(ft.FilePicker, "pick_files", new=AsyncMock(return_value=[selected])):
+                asyncio.run(editor.pick(None))
+            self.assertFalse(editor.error.visible)
+            self.assertEqual(attachment_bytes(editor.values()[-1]), b"small file")
+            self.assertFalse(editor.add.disabled)
+
+    def test_native_batch_checks_all_sizes_before_reading_any_files(self):
+        front = make_front()
+        front.page.web = False
+        front.page.services = []
+        editor = AttachmentEditor(front.libs)
+        selected = [
+            SimpleNamespace(name="small.txt", size=1, path="small.txt", bytes=None),
+            SimpleNamespace(name="large.zip", size=MAX_FILE_BYTES + 1, path="large.zip", bytes=None),
+        ]
+        with patch.object(ft.FilePicker, "pick_files", new=AsyncMock(return_value=selected)):
+            with patch("Frontend.attachments.Path.open") as read:
+                asyncio.run(editor.pick(None))
+        read.assert_not_called()
+        self.assertTrue(editor.error.visible)
+        self.assertEqual(editor.values(), [])
+
+    def test_native_read_is_bounded_even_if_reported_size_is_wrong(self):
+        front = make_front()
+        front.page.web = False
+        front.page.services = []
+        editor = AttachmentEditor(front.libs)
+        selected = SimpleNamespace(name="large.zip", size=0, path="large.zip", bytes=None)
+        source = Mock()
+        source.__enter__ = Mock(return_value=source)
+        source.__exit__ = Mock(return_value=False)
+        source.read.return_value = b"x" * 11
+        with patch.object(ft.FilePicker, "pick_files", new=AsyncMock(return_value=[selected])):
+            with patch("Frontend.attachments.MAX_FILE_BYTES", 10), \
+                    patch("Backend.attachments.MAX_FILE_BYTES", 10), \
+                    patch("Frontend.attachments.Path.open", return_value=source):
+                asyncio.run(editor.pick(None))
+        source.read.assert_called_once_with(11)
+        self.assertTrue(editor.error.visible)
+        self.assertEqual(editor.values(), [])
+        self.assertFalse(editor.add.disabled)
+
+    def test_file_at_limit_is_prepared_outside_ui_thread(self):
+        for web in (False, True):
+            with self.subTest(web=web):
+                front = make_front()
+                front.page.web = web
+                front.page.services = []
+                editor = AttachmentEditor(front.libs)
+                ui_thread = threading.get_ident()
+                threads = []
+
+                def prepare(name, content):
+                    threads.append(threading.get_ident())
+                    return make_attachment(name, content)
+
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "file.zip"
+                    path.write_bytes(b"1234567890")
+                    selected = SimpleNamespace(
+                        name=path.name, size=10, path=None if web else str(path),
+                        bytes=path.read_bytes() if web else None,
+                    )
+                    with patch.object(ft.FilePicker, "pick_files", new=AsyncMock(return_value=[selected])) as pick, \
+                            patch("Frontend.attachments.MAX_FILE_BYTES", 10), \
+                            patch("Backend.attachments.MAX_FILE_BYTES", 10), \
+                            patch("Frontend.attachments.make_attachment", side_effect=prepare):
+                        asyncio.run(editor.pick(None))
+                self.assertEqual(pick.call_args.kwargs["with_data"], web)
+                self.assertEqual(len(threads), 1)
+                self.assertNotEqual(threads[0], ui_thread)
+                self.assertFalse(editor.error.visible)
+                self.assertEqual(attachment_bytes(editor.values()[0]), b"1234567890")
+
+    def test_second_click_does_not_open_another_picker(self):
+        front = make_front()
+        editor = AttachmentEditor(front.libs)
+        editor.add.disabled = True
+        with patch.object(ft.FilePicker, "pick_files", new=AsyncMock()) as pick:
+            asyncio.run(editor.pick(None))
+        pick.assert_not_called()
 
     def test_special_tasks_generate_with_attachments_and_browser_roundtrip(self):
         front = make_front()

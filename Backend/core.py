@@ -9,6 +9,7 @@ from .cloud import Cloud
 from .storage import load_all_sections, save_all_sections, empty_data, ensure_split_storage
 from .json_migration import migrate_legacy_storage
 from .validation import text_length_error
+from .attachments import validate_account_quota
 
 
 DEFAULT_WEB_TIMEZONE = "Europe/Moscow"
@@ -95,12 +96,31 @@ class Backend:
         previous = self._load()
         if previous == data:
             return
+        if self.is_authenticated():
+            validate_account_quota(previous, data)
         if self.web:
             self.store.save_all_sections(data)
         else:
             save_all_sections(self.data_dir, data)
         self._undo_state = (deepcopy(previous), deepcopy(data)) if undoable else None
         self._notify_undo_change()
+
+    def is_authenticated(self):
+        cloud = getattr(self, "cloud", None)
+        return cloud is not None and cloud.check_user_data() is True
+
+    def validate_attachment_selection(self, attachments, task_id=None, section="tasks"):
+        if not self.is_authenticated():
+            return
+        previous = self._load()
+        proposed = deepcopy(previous)
+        target = next((task for task in proposed[section]
+                       if task_id is not None and task.get("id") == task_id), None)
+        if target is None:
+            target = {}
+            proposed[section].append(target)
+        target["attachments"] = attachments
+        validate_account_quota(previous, proposed)
 
     def _notify_undo_change(self):
         callback = getattr(self, 'on_undo_change', None)
@@ -140,7 +160,7 @@ class Backend:
         return tasks
 
     def saveB(self, name, group_id='default', is_repeat=False, created_date=None,
-              deadline=None, priority='Неважно', info_type='created_date'):
+              deadline=None, priority='Неважно', info_type='created_date', attachments=None):
         """Сохраняет дело. is_repeat=True помечает дело как автоматически
         добавленное из ежедневного (повторяющегося) правила — это позволяет
         фронтенду отрисовывать такие дела отдельным блоком, отделённым
@@ -161,8 +181,10 @@ class Backend:
             "deadline": deadline or "",
             "priority": priority or "Неважно",
             "info_type": info_type or "created_date",
+            "attachments": deepcopy(attachments or []),
         })
         self._save(data, undoable=not is_repeat)
+        return data["tasks"][-1]["id"]
 
     def get_device(self):
         return self.phone

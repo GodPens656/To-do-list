@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from functools import wraps
 from datetime import date, datetime, timezone
 
 import flet as ft
@@ -7,12 +8,14 @@ from Backend.app_paths import get_assets_dir
 from Backend.core import Backend
 from Backend.extended import Backend2
 from Backend.validation import text_length_error
+from Backend.attachments import AttachmentQuotaError
 from Backend.cloud import Cloud
 from .libs import Fr_Libs
 from .auth import AuthWidgets
 from .settings import Utils2
 from .main import MainWidgets
 from .notes import NotesMixin
+from .attachments import AttachmentEditor
 from Backend.notifications import NotificationService
 from Backend.autoupdate import AutoUpdateService
 from .theme import (
@@ -423,7 +426,7 @@ class Front(NotesMixin):
                     pass
 
     def undo_last_action(self, e=None):
-        if not self.back.undo_last_action():
+        if not self._guard_attachment_quota(self.back.undo_last_action)():
             return
         self.cloud.alg_for_redact()
         self._settings_screens.clear()
@@ -957,7 +960,18 @@ class Front(NotesMixin):
             return picked
         return self._normalize_picker_date(event.control.value)
 
-    def _add_task_metadata_controls(self, dialog, metadata=None, deadline_as_days=False):
+    def _guard_attachment_quota(self, action):
+        @wraps(action)
+        def guarded(*args, **kwargs):
+            try:
+                return action(*args, **kwargs)
+            except AttachmentQuotaError as error:
+                self.libs.open_dialog("Лимит вложений", str(error), self.page)
+                return False
+        return guarded
+
+    def _add_task_metadata_controls(self, dialog, metadata=None, deadline_as_days=False,
+                                    *, task_id=None, attachment_section="tasks"):
         """Adds the single-choice metadata picker and returns its current values."""
         metadata = metadata or {}
         deadline = metadata.get("deadline") or ""
@@ -1018,6 +1032,12 @@ class Front(NotesMixin):
         selector.on_select = update_visibility
         controls = dialog["Main Cont"].content.controls
         controls[-1:-1] = [label, selector, deadline_field, deadline_button, priority_dropdown]
+        attachments = AttachmentEditor(
+            self.libs, metadata.get("attachments"), back=self.back,
+            task_id=task_id or metadata.get("id"), section=attachment_section,
+        )
+        attachments.refresh()
+        controls.insert(-1, attachments.control)
 
         def values():
             selected = selector.value
@@ -1044,6 +1064,7 @@ class Front(NotesMixin):
                 "deadline_days": selected_deadline_days,
                 "priority": priority_dropdown.value if selected == "priority" else "Неважно",
                 "info_type": selected,
+                "attachments": attachments.values(),
             }
         return values
 
@@ -1073,7 +1094,7 @@ class Front(NotesMixin):
     def add_task(self, e, name_task, status, new_task, repeat_task, group_id=None,
                  mark_as_daily_repeat=False, created_date=None, deadline=None,
                  priority='Неважно', info_type='created_date', *, task_id=None,
-                 group_settings=None, defer_update=False):
+                 group_settings=None, defer_update=False, attachments=None):
         """Функция для добавления дела.
 
         mark_as_daily_repeat=True помечает создаваемое дело как ежедневное
@@ -1101,13 +1122,17 @@ class Front(NotesMixin):
             delo_obr = self.back.auto_add_new_string(name_task)
             target_group_id = group_id or self.current_group_id or 'default'
             if new_task:
-                self.back.saveB(name_task, target_group_id, created_date=created_date,
-                                deadline=deadline, priority=priority, info_type=info_type)
-                id_ = self.back.read_id(name_task)
+                id_ = self._guard_attachment_quota(self.back.saveB)(
+                    name_task, target_group_id, created_date=created_date,
+                    deadline=deadline, priority=priority, info_type=info_type,
+                    attachments=attachments,
+                )
+                if id_ is False:
+                    return False
                 self.close_dlg("f")  # Закрываем диалог
             elif repeat_task:
-                self.back.saveB(name_task, target_group_id, is_repeat=mark_as_daily_repeat)
-                id_ = self.back.read_id(name_task)
+                id_ = self.back.saveB(name_task, target_group_id, is_repeat=mark_as_daily_repeat,
+                                      attachments=attachments)
             else:
                 id_ = task_id if task_id is not None else self.back.read_id(name_task)
             # Храним и ищем исходное название; переносы нужны только для показа.
@@ -1146,6 +1171,7 @@ class Front(NotesMixin):
             widgets = self.utils.create_row_with_task(
                 delo_obr, status, id_, created_date, target_group_id, deadline, priority, info_type,
                 group_settings=group_settings,
+                attachments=attachments,
             )
             row = widgets[0]
             row.data = name_task  # Поиск не зависит от переносов для отображения.
@@ -1168,12 +1194,15 @@ class Front(NotesMixin):
             def redact_task(e, id_task, row_widget):
                 """Функция для редактирования дела"""
 
+                @self._guard_attachment_quota
                 def real_redact(e=None):
                     """Именно редактирование дела"""
                     if not self._validate_text_length(entry_new_task):
                         return
                     new_name = entry_new_task.value
                     metadata = metadata_values()
+                    if metadata is None:
+                        return
                     self.back.redact_taskB(id_task, new_name, metadata)
 
                     # Пересобираем строку целиком, чтобы сразу обновились не
@@ -1195,6 +1224,7 @@ class Front(NotesMixin):
                             task_data.get("deadline", ""),
                             task_data.get("priority", "Неважно"),
                             task_data.get("info_type", "created_date"),
+                            attachments=task_data.get("attachments"),
                         )
                         rebuilt_row = rebuilt_widgets[0]
                         rebuilt_row.data = new_name
@@ -1438,7 +1468,9 @@ class Front(NotesMixin):
         group_dropdown = self.create_group_dropdown()
         main_cont = dialog["Main Cont"]
         main_cont.content.controls.insert(3, group_dropdown)
-        metadata_values = self._add_task_metadata_controls(dialog, deadline_as_days=True)
+        metadata_values = self._add_task_metadata_controls(
+            dialog, deadline_as_days=True, attachment_section="repeat_tasks",
+        )
 
         def on_year_date_change(e):
             picker_value = self._picker_event_date(e)
@@ -1487,6 +1519,7 @@ class Front(NotesMixin):
         repeat_type_dd.on_select = update_repeat_widgets
         update_repeat_widgets()
 
+        @self._guard_attachment_quota
         def create_repeat(_):
             if not self._validate_text_length(entry_task_rep):
                 return
@@ -1571,7 +1604,9 @@ class Front(NotesMixin):
         title_cont = dialog["Header"]
         nazad = dialog["cancel"]
         group_dropdown = self.create_group_dropdown()
-        metadata_values = self._add_task_metadata_controls(dialog, deadline_as_days=True)
+        metadata_values = self._add_task_metadata_controls(
+            dialog, deadline_as_days=True, attachment_section="postponed",
+        )
 
         date_field = ft.TextField(
             label="Дата добавления",
@@ -1616,6 +1651,7 @@ class Front(NotesMixin):
         main_cont.content.controls.insert(4, date_field)
         main_cont.content.controls.insert(5, date_button)
 
+        @self._guard_attachment_quota
         def create_postponed(_):
             if not self._validate_text_length(entry_task_post):
                 return
@@ -1672,7 +1708,8 @@ class Front(NotesMixin):
         group_dropdown.value = group_id
         dialog["Main Cont"].content.controls.insert(3, group_dropdown)
         metadata_values = self._add_task_metadata_controls(
-            dialog, metadata, deadline_as_days=True
+            dialog, metadata, deadline_as_days=True,
+            task_id=task_id, attachment_section="repeat_tasks",
         )
 
         # В хранилище ежедневное правило и свой интервал используют тип day.
@@ -1716,6 +1753,7 @@ class Front(NotesMixin):
         repeat_type_dd.on_select = update_repeat_widgets
         update_repeat_widgets()
 
+        @self._guard_attachment_quota
         def save(_):
             if not self._validate_text_length(entry):
                 return
@@ -1771,7 +1809,8 @@ class Front(NotesMixin):
         group_dropdown = self.create_group_dropdown()
         group_dropdown.value = group_id
         metadata_values = self._add_task_metadata_controls(
-            dialog, metadata, deadline_as_days=True
+            dialog, metadata, deadline_as_days=True,
+            task_id=task_id, attachment_section="postponed",
         )
         date_field = ft.TextField(
             label="Дата добавления",
@@ -1814,6 +1853,7 @@ class Front(NotesMixin):
         content.insert(4, date_field)
         content.insert(5, date_button)
 
+        @self._guard_attachment_quota
         def save(_):
             if not self._validate_text_length(entry):
                 return
@@ -1951,7 +1991,7 @@ class Front(NotesMixin):
         for task, group_id, metadata in tasks:
             self.back.saveB(task, group_id, is_repeat=True,
                             deadline=metadata["deadline"], priority=metadata["priority"],
-                            info_type=metadata["info_type"])
+                            info_type=metadata["info_type"], attachments=metadata.get("attachments"))
 
         if tasks:
             self.cloud.alg_for_redact()
@@ -1996,7 +2036,7 @@ class Front(NotesMixin):
             # Отложенное дело отображается в общем списке дел.
             self.back.saveB(task, group_id, is_repeat=True,
                             deadline=metadata["deadline"], priority=metadata["priority"],
-                            info_type=metadata["info_type"])
+                            info_type=metadata["info_type"], attachments=metadata.get("attachments"))
 
         if tasks:
             self.cloud.alg_for_redact()
@@ -2040,6 +2080,7 @@ class Front(NotesMixin):
                 deadline=data.get("deadline", ""), priority=data.get("priority", "Неважно"),
                 info_type=data.get("info_type", "created_date"),
                 task_id=data["id"], group_settings=group_settings, defer_update=True,
+                attachments=data.get("attachments"),
             )
 
     def show_groups(self, e=None):

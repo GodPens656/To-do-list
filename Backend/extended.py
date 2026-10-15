@@ -1,4 +1,5 @@
 from pathlib import Path
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 import base64
 import io
@@ -681,6 +682,7 @@ class Backend2:
             "deadline_days": metadata.get("deadline_days") or "",
             "priority": metadata.get("priority") or "Неважно",
             "info_type": metadata.get("info_type") or "created_date",
+            "attachments": deepcopy(metadata.get("attachments") or []),
         })
         self._save(data)
         self.cloud.alg_for_redact()
@@ -759,6 +761,7 @@ class Backend2:
                     "deadline_days": item.get("deadline_days") or "",
                     "priority": item.get("priority") or "Неважно",
                     "info_type": item.get("info_type") or "created_date",
+                    "attachments": deepcopy(item.get("attachments") or []),
                 }
                 itog.append((str(item.get("name", "")).replace('{N}', '\n'), group_id, metadata))
                 item["last_date"] = today_str
@@ -790,6 +793,7 @@ class Backend2:
                 "deadline_days": item.get("deadline_days") or "",
                 "priority": item.get("priority") or "Неважно",
                 "info_type": item.get("info_type") or "created_date",
+                "attachments": deepcopy(item.get("attachments") or []),
             }
             itog.append((task_text, repeat_type, repeat_value, group_id, task_id, metadata))
         return itog
@@ -854,6 +858,7 @@ class Backend2:
             "deadline_days": metadata.get("deadline_days") or "",
             "priority": metadata.get("priority") or "Неважно",
             "info_type": metadata.get("info_type") or "created_date",
+            "attachments": deepcopy(metadata.get("attachments") or []),
         })
         self._save(data)
         self.cloud.alg_for_redact()
@@ -877,6 +882,7 @@ class Backend2:
                 "deadline_days": item.get("deadline_days") or "",
                 "priority": item.get("priority") or "Неважно",
                 "info_type": item.get("info_type") or "created_date",
+                "attachments": deepcopy(item.get("attachments") or []),
             }
             itog.append((task_text, item.get("date", ""), item.get("group", "default") or "default", item.get("id"), metadata))
         return itog
@@ -941,6 +947,7 @@ class Backend2:
                     "deadline_days": item.get("deadline_days") or "",
                     "priority": item.get("priority") or "Неважно",
                     "info_type": item.get("info_type") or "created_date",
+                    "attachments": deepcopy(item.get("attachments") or []),
                 }
                 ready_tasks.append((name.replace('{N}', '\n'), planned_date, item.get("group", "default") or "default", metadata))
             else:

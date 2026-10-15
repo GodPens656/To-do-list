@@ -1,6 +1,7 @@
 import asyncio
 
 import flet as ft
+from .attachments import attachment_controls
 from flet_color_pickers import ColorLabelType, ColorPicker, PaletteType
 from datetime import datetime
 from pathlib import Path
@@ -637,6 +638,8 @@ class Utils2:
                 ], scroll=None if self.phone else ft.ScrollMode.AUTO,
             )
 
+        if metadata.get("attachments"):
+            row.controls[0].controls.append(attachment_controls(self.libs, metadata["attachments"]))
         self.cont_with_repeat_task.content.controls.append(row)
 
 
@@ -702,6 +705,8 @@ class Utils2:
             scroll=None if self.phone else ft.ScrollMode.AUTO,
         )
 
+        if metadata.get("attachments"):
+            row.controls[0].controls.append(attachment_controls(self.libs, metadata["attachments"]))
         self.cont_with_postponed_task.content.controls.append(row)
 
         delete.on_click = lambda _, r=row, t=task_name, d=planned_date, g=group_id: cmd_for_delete(r, t, d, g)

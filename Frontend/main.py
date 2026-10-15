@@ -9,6 +9,7 @@ import flet as ft
 
 from Backend.core import local_today
 from .info import Utils3
+from .attachments import AttachmentEditor
 
 
 class MainWidgets(Utils3):
@@ -53,6 +54,7 @@ class MainWidgets(Utils3):
             extra_info_dropdown.value = "created_date"
             deadline_field.value = ""
             priority_dropdown.value = "Неважно"
+            attachments.reset()
             update_extra_controls()
             self.open_page(cont_H, cont_AC, self.cancel, "new-task")
 
@@ -255,6 +257,8 @@ class MainWidgets(Utils3):
         form_controls[-1:-1] = [
             extra_info_label, extra_info_dropdown, deadline_field, deadline_button, priority_dropdown
         ]
+        attachments = AttachmentEditor(self.libs, back=self.back)
+        form_controls.insert(-1, attachments.control)
 
         self.create_task = widgets["btn_create_task"]
         self.create_task.on_click = lambda e: self.add_task(
@@ -262,6 +266,7 @@ class MainWidgets(Utils3):
             deadline=deadline_field.value if extra_info_dropdown.value == "deadline" else None,
             priority=priority_dropdown.value if extra_info_dropdown.value == "priority" else "Неважно",
             info_type=extra_info_dropdown.value,
+            attachments=attachments.values(),
         )
         self.cancel = widgets["cancel"]
         self.cancel.on_click = self.close_dlg

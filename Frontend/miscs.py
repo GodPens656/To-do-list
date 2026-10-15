@@ -2,6 +2,7 @@ import flet as ft
 from datetime import datetime
 from .theme import get_theme_colors
 from .libs import Fr_Libs
+from .attachments import attachment_controls
 from Backend.extended import Backend2
 from Backend.core import local_today
 
@@ -73,7 +74,7 @@ class Utils:
 
     def create_row_with_task(self, task, status, id_task, created_date=None, group_id='default',
                              deadline=None, priority='Неважно', info_type='created_date',
-                             *, show_checkbox=True, group_settings=None):
+                             *, show_checkbox=True, group_settings=None, attachments=None):
         """Функция для создания и возвращения строки с делом, кнопками и т.д.
         created_date — дата создания дела (ДД-ММ-ГГГГ), отображается
         мелкой подписью под названием дела, если известна и если включена
@@ -132,6 +133,8 @@ class Utils:
             details.append(self._task_badge(
                 ft.Icons.FLAG_OUTLINED, priority, priority_color,
             ))
+        if attachments:
+            details.append(attachment_controls(self.libs, attachments))
         if details:
             task_content = ft.Column(
                 controls=[taskW, *details],

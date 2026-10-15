@@ -1874,6 +1874,12 @@ class Front(NotesMixin):
         async def do_login():
             try:
                 vosvr = await asyncio.to_thread(self.cloud.alg_for_login, login, password)
+            except Exception:
+                self.libs.open_dialog(
+                    "Авторизация", "Не удалось подключиться к MEGA. Проверьте настройки хранилища и интернет.",
+                    self.page,
+                )
+                return
             finally:
                 self._close_loading_view(loading)
 
@@ -1909,6 +1915,12 @@ class Front(NotesMixin):
                 vosvr = await asyncio.to_thread(
                     self.cloud.alg_for_regist, login, password
                 )
+            except Exception:
+                self.libs.open_dialog(
+                    "Авторизация", "Не удалось подключиться к MEGA. Проверьте настройки хранилища и интернет.",
+                    self.page,
+                )
+                return
             finally:
                 self._close_loading_view(loading)
 

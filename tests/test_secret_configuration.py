@@ -39,12 +39,11 @@ class SecretConfigurationTests(unittest.TestCase):
         with self.assertRaises(other.EncryptedFileError):
             other.decrypt_bytes(encrypted)
 
-    def test_disk_client_uses_configured_token(self):
+    def test_disk_client_is_lazy_and_uses_mega(self):
         cloud = Cloud.__new__(Cloud)
-        with patch("Backend.cloud.YANDEX_DISK_TOKEN", "test-only-token"), \
-                patch("Backend.cloud.yadisk.YaDisk") as client:
+        with patch("Backend.cloud.MegaDisk") as client:
             self.assertIs(cloud.initizialise_disk(), client.return_value)
-        client.assert_called_once_with(token="test-only-token", session="httpx")
+        client.assert_called_once_with()
 
 
 if __name__ == "__main__":

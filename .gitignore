@@ -2,6 +2,7 @@
 secret.py
 /saves/
 /settings/
+/cloud_downloads/
 .env
 .env.*
 !.env.example
@@ -36,3 +37,4 @@ Thumbs.db
 Desktop.ini
 /artifacts
 /.codex-remote-attachments
+/backups-firefox

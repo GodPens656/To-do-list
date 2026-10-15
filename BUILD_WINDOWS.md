@@ -1,7 +1,7 @@
 # Сборка .exe для Windows
 
 Перед сборкой создайте и настройте `secret.py` по [README.md](README.md).
-PyInstaller включает этот модуль вместе с токеном и ключевым словом в
+PyInstaller включает этот модуль вместе с данными входа MEGA и ключевым словом в
 готовое приложение. Такую сборку нельзя публиковать с личными секретами.
 
 Из папки проекта, в том же Python-окружении, где запускается приложение:
@@ -30,8 +30,7 @@ python -m pip install -r requirements-build.txt
 Версии пакетов `flet`, `flet-cli` и `flet-desktop` должны совпадать.
 Зависимости приложения также должны быть установлены в этом окружении.
 
-В сборку явно включаются динамические импорты YaDisk (`_import_session`,
-`_async_client`, `_client` и сессии `aiohttp`, `httpx`, `requests`),
+В сборку явно включаются динамический импорт `mega.hashcash`,
 `plyer.platforms`, Windows-уведомления Plyer и `flet_desktop`.
 Для `--hidden-import` используется имя Python-модуля `flet_desktop`,
 а для установки через pip — имя пакета `flet-desktop`.

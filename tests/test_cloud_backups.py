@@ -6,8 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import yadisk
-
 from Backend.cloud import BACKUP_CHECK_SECONDS, BACKUP_RETRY_SECONDS, Cloud
 from Backend.crypto import encrypt_bytes
 from Backend.storage import SECTION_FILENAMES
@@ -31,14 +29,14 @@ class MemoryDisk:
 
     def mkdir(self, path):
         if self.exists(path):
-            raise yadisk.exceptions.PathExistsError()
+            raise FileExistsError()
         if path.rsplit('/', 1)[0] not in self.dirs:
-            raise yadisk.exceptions.PathNotFoundError()
+            raise FileNotFoundError()
         self.dirs.add(path)
 
     def listdir(self, path):
         if path not in self.dirs:
-            raise yadisk.exceptions.PathNotFoundError()
+            raise FileNotFoundError()
         return [
             SimpleNamespace(name=item.rsplit('/', 1)[1], type=kind)
             for paths, kind in ((self.dirs, 'dir'), (self.files, 'file'))
@@ -47,14 +45,14 @@ class MemoryDisk:
 
     def _copy(self, source, target, **kwargs):
         if source not in self.files:
-            raise yadisk.exceptions.PathNotFoundError()
+            raise FileNotFoundError()
         if self.exists(target) and not kwargs.get('overwrite'):
-            raise yadisk.exceptions.PathExistsError()
+            raise FileExistsError()
         self.files[target] = self.files[source]
 
     def _move(self, source, target, **kwargs):
         if self.exists(target) and not kwargs.get('overwrite'):
-            raise yadisk.exceptions.PathExistsError()
+            raise FileExistsError()
         for path in list(self.files):
             if path.startswith(source + '/'):
                 self.files[target + path[len(source):]] = self.files.pop(path)
@@ -155,7 +153,7 @@ class BackupTests:
 
     def test_missing_source_does_not_create_partial_backup(self):
         self.disk.files.pop('/For_to-do/user_password/repeat_tasks.json')
-        with self.assertRaises(yadisk.exceptions.PathNotFoundError):
+        with self.assertRaises(FileNotFoundError):
             self.cloud.create_weekly_backup(self.today)
         self.assertEqual(self.disk.listdir(self.backups), [])
 
@@ -169,7 +167,7 @@ class BackupTests:
             self.disk._move(source, destination, **kwargs)
 
         self.disk.move.side_effect = other_device_finishes_first
-        with self.assertRaises(yadisk.exceptions.PathExistsError):
+        with self.assertRaises(FileExistsError):
             self.cloud.create_weekly_backup(self.today)
         self.assertFalse(self.cloud.create_weekly_backup(self.today))
         for name in SECTION_FILENAMES.values():

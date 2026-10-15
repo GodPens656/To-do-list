@@ -3,7 +3,7 @@ import io
 import json
 import hashlib
 from pathlib import Path
-import yadisk
+from .mega_disk import MegaDisk, is_retryable_error, load_mega_credentials
 import time
 import threading
 from datetime import date, datetime, timedelta
@@ -24,7 +24,6 @@ from .json_migration import (
     migrate_legacy_storage,
 )
 import requests
-from secret import YANDEX_DISK_TOKEN
 from .crypto import (
     data_encryption_enabled,
     decrypt_bytes,
@@ -56,7 +55,6 @@ def _is_locked_error(exc):
     return (
         "423" in text
         or "Locked" in text
-        or "DiskResourceLockedError" in text
         or getattr(exc, "status_code", None) == 423
     )
 
@@ -64,7 +62,7 @@ def _is_locked_error(exc):
 def _is_retryable_error(exc):
     """Ошибки, при которых имеет смысл повторить попытку: временная
     блокировка ресурса (423) или гонка при передаче файла по сети."""
-    return _is_locked_error(exc) or _is_content_length_error(exc)
+    return is_retryable_error(exc) or _is_locked_error(exc) or _is_content_length_error(exc)
 
 
 class Cloud:
@@ -152,25 +150,16 @@ class Cloud:
 
 
     def initizialise_disk(self):
-        """Инициализация диска"""
-        s = time.time()
-        self.token = YANDEX_DISK_TOKEN
-        a =  yadisk.YaDisk(token=self.token, session='httpx')
-        e = time.time()
-        print(e - s, 'init_disk')
-        return a
+        """MEGA авторизуется при первом облачном запросе."""
+        return MegaDisk()
 
     def check_connect(self):
         """Проверка подключения к интернету"""
-        s = time.time()
         try:
-            requests.get("https://www.comss.ru/", timeout=100)
-            e = time.time()
-            print(e - s, 'check connect')
+            load_mega_credentials()
+            requests.get("https://g.api.mega.co.nz/cs", timeout=(5, 10))
             return True
-        except requests.RequestException:
-            e = time.time()
-            print(e - s, 'check connect')
+        except (requests.RequestException, ValueError):
             return False
 
 
@@ -194,7 +183,7 @@ class Cloud:
             pass
 
     def cloud_path(self, *parts):
-        """Собирает путь для Яндекс Диска с ведущим слешем."""
+        """Собирает путь в MEGA с ведущим слешем."""
         cleaned = [str(part).strip("/") for part in parts if str(part).strip("/")]
         return "/" + "/".join(cleaned)
 
@@ -226,19 +215,15 @@ class Cloud:
             self._copy_data_dir(self.local_data_dir, self.data_dir)
 
     def exists_on_cloud(self, path):
-        """Проверяет, существует ли файл или папка в Яндекс.Диске."""
-        try:
-            return self.disk.exists(path)
-        except Exception:
-            return False
+        """Сетевые ошибки не считаются отсутствием файла или аккаунта."""
+        return self.disk.exists(path)
 
     def create_folder_on_cloud(self, path):
-        """Создает папку в Яндекс.Диске, если ее еще нет."""
-        if not self.exists_on_cloud(path):
-            try:
-                self.disk.mkdir(path)
-            except Exception:
-                pass
+        """Создает папку в MEGA, если ее еще нет."""
+        try:
+            self.disk.mkdir(path)
+        except FileExistsError:
+            pass
 
     # ------------------------------------------------------------------
     # Скачивание
@@ -249,7 +234,8 @@ class Cloud:
         return hashlib.sha256(payload).hexdigest()
 
     def _account_key(self, login_password):
-        return self._fingerprint(login_password.encode("utf-8"))
+        # Отметки старого провайдера не подтверждают загрузку в MEGA.
+        return self._fingerprint(("mega:" + login_password).encode("utf-8"))
 
     def _load_sync_state(self):
         try:
@@ -419,7 +405,7 @@ class Cloud:
                 self.account_encryption_enabled(login_password, refresh=True)
                 result, legacy = self._download_snapshot(login_password, max_retries)
             except Exception as exc:
-                print(f"Ошибка скачивания из облака: {exc}")
+                print(f"Ошибка скачивания из облака: {type(exc).__name__}")
                 return False
             if not result:
                 return False
@@ -529,7 +515,7 @@ class Cloud:
                         time.sleep(delay)
                         delay *= 2
                         continue
-                    print(f"Ошибка загрузки {filename} в облако: {exc}")
+                    print(f"Ошибка загрузки {filename} в облако: {type(exc).__name__}")
                     return
 
         local_path = self.data_dir / filename
@@ -555,7 +541,7 @@ class Cloud:
                         time.sleep(delay)
                         delay *= 2
                         continue
-                    print(f"Ошибка загрузки {filename} в облако: {e}")
+                    print(f"Ошибка загрузки {filename} в облако: {type(e).__name__}")
                     return
                 finally:
                     try:
@@ -613,7 +599,7 @@ class Cloud:
             backups_path = self.cloud_path(account_path, "backups")
             try:
                 self.disk.mkdir(backups_path)
-            except yadisk.exceptions.PathExistsError:
+            except FileExistsError:
                 pass
 
             # Не принимаем незаконченные/посторонние папки за успешный бэкап.
@@ -849,8 +835,7 @@ class Cloud:
         Раньше каждый вызов создавал собственный поток и сразу же
         выполнял upload(), из-за чего при массовых изменениях (например,
         при загрузке списка дел на старте) в облако одновременно летели
-        десятки конкурентных запросов на один и тот же файл — отсюда и
-        ошибка 423 (DiskResourceLockedError). Теперь запрос лишь
+        десятки конкурентных запросов на один и тот же файл. Теперь запрос лишь
         регистрируется, а фактическую выгрузку — одну за другой —
         выполняет единственный фоновый воркер (см. _upload_worker), причём
         каждая выгрузка сама решает, какие из 4 файлов секций реально

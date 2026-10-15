@@ -9,13 +9,7 @@ from pathlib import Path
 
 
 HIDDEN_IMPORTS = (
-    "yadisk._import_session",
-    "yadisk._async_client",
-    "yadisk._client",
-    "yadisk.sessions.aiohttp_session",
-    "yadisk.sessions.httpx_session",
-    "yadisk.sessions",
-    "yadisk.sessions.requests_session",
+    "mega.hashcash",
     "plyer.platforms",
     "plyer.platforms.win",
     "plyer.platforms.win.notification",

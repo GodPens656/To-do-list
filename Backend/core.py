@@ -498,6 +498,8 @@ class Backend:
         data = self._load()
         for group in data["groups"]:
             if group.get("id") == group_id:
+                if group.get("shared_group"):
+                    return False
                 group["name"] = name
         self._save(data)
         return True

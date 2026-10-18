@@ -6,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import flet as ft
 
@@ -163,6 +163,22 @@ class SharedGroupTests(unittest.TestCase):
                 member.connect_shared_group(name, password)
             self.assertEqual(member._load(), before)
 
+    def test_shared_groups_cannot_be_renamed_by_creator_or_member(self):
+        for group_type in ("tasks", "notes"):
+            with self.subTest(group_type=group_type):
+                name = f"Группа {group_type}"
+                group_id = self.owner.create_group(name, group_type=group_type)
+                self.assertTrue(self.owner.rename_group(group_id, name + " новая"))
+                self.owner.make_group_shared(group_id, "пароль")
+                member, _ = self.make_client()
+                member_id = member.connect_shared_group(name + " новая", "пароль")
+                for back, ident in ((self.owner, group_id), (member, member_id)):
+                    before = back._load()
+                    with patch.object(back, "_save") as save:
+                        self.assertFalse(back.rename_group(ident, "Другое название"))
+                    save.assert_not_called()
+                    self.assertEqual(back._load(), before)
+
     def test_updates_additions_and_deletions_propagate_both_directions(self):
         member, cloud, member_group = self.share_and_join()
         member.redact_statusB(self.task_id, True)
@@ -313,16 +329,20 @@ class SharedGroupUITests(unittest.TestCase):
         for row, item in zip(rows.controls, front.back.get_groups()):
             labels = [i.content for i in row.controls[1].items]
             self.assertIn("Сделать группу общей", labels)
+            self.assertIn("Редактировать", labels)
         data = front.back._load()
-        next(g for g in data["groups"] if g["id"] == group)["shared_group"] = {
-            "name": "Команда", "password": "пароль"}
+        for item in data["groups"]:
+            item["shared_group"] = {"name": item["name"], "password": "пароль"}
         front.back._save(data)
         rows.controls.clear()
-        front._append_group_row(rows, next(g for g in front.back.get_groups() if g["id"] == group), Mock())
-        button, menu = rows.controls[0].controls
-        self.assertIn(ft.Icons.LINK_ROUNDED, [c.icon for c in button.content.controls if isinstance(c, ft.Icon)])
-        self.assertNotIn("Сделать группу общей", [i.content for i in menu.items])
-        self.assertIn("Отключить", [i.content for i in menu.items])
+        for item in front.back.get_groups():
+            front._append_group_row(rows, item, Mock())
+            button, menu = rows.controls[-1].controls
+            self.assertIn(ft.Icons.LINK_ROUNDED, [c.icon for c in button.content.controls if isinstance(c, ft.Icon)])
+            self.assertNotIn("Сделать группу общей", [i.content for i in menu.items])
+            self.assertNotIn("Редактировать", [i.content for i in menu.items])
+            if item["id"] != "default":
+                self.assertIn("Отключить", [i.content for i in menu.items])
 
     def test_password_form_handles_errors_and_success_without_exposing_password(self):
         front = make_front()
@@ -333,12 +353,14 @@ class SharedGroupUITests(unittest.TestCase):
         front._open_share_group_dialog(group)
         _, content, _ = front.open_modified_dialog.call_args.args
         controls = content.content.controls
+        warning = next(c for c in controls if isinstance(c, ft.Text) and "нельзя редактировать" in (c.value or ""))
         password = next(c for c in controls if isinstance(c, ft.TextField))
         create = controls[-2].controls[0]
         self.assertTrue(password.password)
         password.value = "пароль"
         asyncio.run(create.on_click(None))
         self.assertEqual(controls[2].value, "Введите пароль")
+        self.assertIn("название изменить не получится", warning.value)
         self.assertFalse(create.disabled)
         front.show_groups.assert_not_called()
         front.back.make_group_shared.side_effect = None
@@ -346,6 +368,29 @@ class SharedGroupUITests(unittest.TestCase):
         front.back.make_group_shared.assert_called_with(group["id"], "пароль")
         front.show_groups.assert_called_once()
         self.assertEqual(password.value, "")
+
+    def test_share_dialog_copies_exact_group_name_and_handles_clipboard_failure(self):
+        for phone in (False, True):
+            with self.subTest(phone=phone):
+                front = make_front(phone=phone)
+                front.page.services = []
+                front.open_modified_dialog = Mock()
+                group = {"id": "test", "name": "Команда с длинным названием " * 8}
+                front._open_share_group_dialog(group)
+                controls = front.open_modified_dialog.call_args.args[1].content.controls
+                name, copy = controls[0].controls
+                self.assertEqual(name.value, group["name"])
+                self.assertTrue(name.selectable)
+                with patch.object(ft.Clipboard, "set", new_callable=AsyncMock) as clipboard_set:
+                    asyncio.run(copy.on_click(None))
+                    clipboard_set.assert_awaited_once_with(group["name"])
+                    self.assertEqual(front.page.services, [front._group_name_clipboard])
+                    self.assertIn("скопировано", controls[4].value)
+                    clipboard_set.side_effect = RuntimeError("Clipboard unavailable")
+                    asyncio.run(copy.on_click(None))
+                    self.assertIn("Не удалось скопировать", controls[4].value)
+                    self.assertTrue(controls[4].visible)
+                    self.assertEqual(len(front.page.services), 1)
 
     def test_authorization_tile_lists_memberships_and_updates_after_join(self):
         front = make_front()

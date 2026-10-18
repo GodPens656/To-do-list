@@ -2239,8 +2239,10 @@ class Front(NotesMixin):
             icon_color=self.libs.colors["MutedColor"],
             tooltip="Действия с группой",
             items=[
-                ft.PopupMenuItem(content="Редактировать", icon=ft.Icons.EDIT_ROUNDED,
-                                 on_click=edit_group),
+                *([] if group.get("is_shared") else [
+                    ft.PopupMenuItem(content="Редактировать", icon=ft.Icons.EDIT_ROUNDED,
+                                     on_click=edit_group),
+                ]),
                 *([] if group_id == 'default' else [
                     ft.PopupMenuItem(content="Отключить" if group.get("is_shared") else "Удалить",
                                      icon=ft.Icons.LINK_OFF_ROUNDED if group.get("is_shared") else ft.Icons.DELETE_ROUNDED,
@@ -2287,6 +2289,27 @@ class Front(NotesMixin):
         shared_content = "заметки и их вложения" if group.get("type") == "notes" else "только обычные дела"
         message = ft.Text(f"Общими станут {shared_content}. Для подключения нужны название группы и пароль.",
                           size=self.libs.text_size(14), color=self.TxtColor)
+        warning = ft.Text("После создания общей группы её нельзя редактировать: название изменить не получится.",
+                          size=self.libs.text_size(14), color=self.TxtColor)
+        copy_status = ft.Text(size=self.libs.text_size(12), color=self.TxtColor, visible=False)
+
+        async def copy_name(_):
+            try:
+                clipboard = getattr(self, "_group_name_clipboard", None)
+                if not isinstance(clipboard, ft.Clipboard):
+                    clipboard = self._group_name_clipboard = ft.Clipboard()
+                    if clipboard not in self.page.services:
+                        self.page.services.append(clipboard)
+                    self.page.update()
+                await clipboard.set(group["name"])
+                copy_status.value = "Название группы скопировано"
+                copy_status.color = self.TxtColor
+            except Exception:
+                copy_status.value = "Не удалось скопировать название. Выделите и скопируйте его вручную."
+                copy_status.color = ft.Colors.RED
+            copy_status.visible = True
+            self.page.update()
+
         create = self.libs.create_style_button("Сделать общей")
         cancel = self.libs.create_style_button("Назад")
         progress = ft.ProgressRing(width=20, height=20, visible=False)
@@ -2319,8 +2342,13 @@ class Front(NotesMixin):
         create.on_click = share
         password.on_submit = share
         content = self.libs.create_style_cont([
-            ft.Text(group["name"], size=self.libs.text_size(18), color=self.TxtColor),
-            password, message, ft.Row([create, progress], wrap=True), cancel,
+            ft.Row([
+                ft.Text(group["name"], size=self.libs.text_size(18), color=self.TxtColor,
+                        selectable=True, expand=True),
+                ft.IconButton(icon=ft.Icons.COPY_ROUNDED, tooltip="Скопировать название группы",
+                              icon_color=self.libs.FletIconColor, on_click=copy_name),
+            ]),
+            password, message, warning, copy_status, ft.Row([create, progress], wrap=True), cancel,
         ])
         self.open_modified_dialog(self.libs.create_style_header("Общая группа"), content, cancel)
 

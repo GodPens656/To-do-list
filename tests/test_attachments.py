@@ -196,7 +196,8 @@ class AttachmentTests(unittest.TestCase):
 
                 def edit():
                     card = next(c for c in front.tasks_cont.content.controls if c.key == task["id"])
-                    actions = card.content.controls[-1 if phone else 0].content
+                    actions = (card.content.controls[-1].controls[0].controls[-1].content
+                               if phone else card.content.controls[0].content)
                     actions.controls[0].on_click(None)
                     return editor_on_screen(front)
 

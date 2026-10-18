@@ -1218,6 +1218,35 @@ class Utils2:
             value=False if self.web else sets["notifications_enabled"],
             disabled=self.web,
         )
+        switch_important = ft.Switch(
+            value=False if self.web else sets["notification_important_enabled"],
+            disabled=self.web,
+        )
+        switch_deadline = ft.Switch(
+            value=False if self.web else sets["notification_deadline_enabled"],
+            disabled=self.web,
+        )
+
+        def group_notification_row(label, switch):
+            return ft.Row(
+                [
+                    ft.Text(
+                        label, color=self.TxtColor,
+                        size=self.libs.text_size(18), expand=True,
+                    ),
+                    switch,
+                ],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+
+        important_row = group_notification_row(
+            "Отправлять уведомление если в группах есть невыполненные очень важные дела",
+            switch_important,
+        )
+        deadline_row = group_notification_row(
+            "Отправлять уведомления если в группах есть дела с дедлайном, заканчивающимся через 1 день",
+            switch_deadline,
+        )
         quiet_text = ft.Text("Режим тишины", color=self.TxtColor, size=self.libs.text_size(18))
         switch_quiet = ft.Switch(
             value=False if self.web else sets["notification_quiet_enabled"],
@@ -1293,6 +1322,10 @@ class Utils2:
             self.back2.redact_setting("notification_quiet_enabled", switch_quiet.value)
             update_notifications_settings()
 
+        def change_group_notification(setting, switch):
+            self.back2.redact_setting(setting, switch.value)
+            update_notifications_settings()
+
         def change_interval(e):
             interval = interval_entry.value
             try:
@@ -1337,6 +1370,12 @@ class Utils2:
         if not self.web:
             switch_enabled.on_change = change_enabled
             switch_quiet.on_change = change_quiet_enabled
+            switch_important.on_change = lambda e: change_group_notification(
+                "notification_important_enabled", switch_important
+            )
+            switch_deadline.on_change = lambda e: change_group_notification(
+                "notification_deadline_enabled", switch_deadline
+            )
         interval_apply.on_click = change_interval
         sync_quiet_controls()
 
@@ -1363,6 +1402,8 @@ class Utils2:
         controls = [
             enabled_row,
             interval_row,
+            important_row,
+            deadline_row,
             quiet_row,
             quiet_range_row,
             interval_apply,

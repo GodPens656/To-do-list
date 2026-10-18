@@ -16,7 +16,8 @@ class NotificationService:
     NOTIFICATION_ID = 1001
     ANDROID_PRELOAD_COUNT = 11
 
-    def __init__(self, page, phone, settings_provider, alarm_dialog_provider=None, web=False):
+    def __init__(self, page, phone, settings_provider, alarm_dialog_provider=None, web=False,
+                 data_provider=None):
         self.page = page
         self.phone = phone
         # web=True -> приложение открыто как сайт в браузере. Прямой доступ
@@ -27,6 +28,8 @@ class NotificationService:
         # Поэтому на сайте уведомления полностью отключены.
         self.web = web
         self.settings_provider = settings_provider
+        self.data_provider = data_provider
+        self._schedule_lock = asyncio.Lock()
         self.notifications = None
         self.permission_handler = None
         self.notification_permission = None
@@ -146,6 +149,52 @@ class NotificationService:
             if now > last:
                 self.page.run_task(self.refresh_android_schedule)
 
+    def data_changed(self):
+        """Обновляет заранее подготовленные напоминания после изменения дел."""
+        if self.web or not self.phone or self.notifications is None:
+            return
+        settings = self.settings_provider()
+        if (settings.get("notification_important_enabled", False)
+                or settings.get("notification_deadline_enabled", False)):
+            self.page.run_task(self.refresh_android_schedule)
+
+    def _notification_bodies(self, settings, check_dt, data=None):
+        important_enabled = settings.get("notification_important_enabled", False)
+        deadline_enabled = settings.get("notification_deadline_enabled", False)
+        if not (important_enabled or deadline_enabled) or self.data_provider is None:
+            return [self.BODY]
+        if data is None:
+            data = self.data_provider()
+
+        important_groups = set()
+        deadline_groups = set()
+        tomorrow = check_dt.date() + datetime.timedelta(days=1)
+        for task in data.get("tasks", []):
+            if task.get("status"):
+                continue
+            group_id = task.get("group", "default")
+            if important_enabled and task.get("priority") == "Очень важно":
+                important_groups.add(group_id)
+            if deadline_enabled:
+                try:
+                    deadline = datetime.datetime.strptime(task.get("deadline"), "%d-%m-%Y").date()
+                except (TypeError, ValueError):
+                    continue
+                if deadline == tomorrow:
+                    deadline_groups.add(group_id)
+
+        bodies = []
+        for group in data.get("groups", []):
+            if group.get("type", "tasks") != "tasks":
+                continue
+            group_id = group.get("id")
+            group_name = group.get("name", "")
+            if group_id in important_groups:
+                bodies.append(f'Есть очень важные дела в группе "{group_name}"')
+            if group_id in deadline_groups:
+                bodies.append(f'Скоро подойдёт дедлайн в делах группы "{group_name}"')
+        return bodies or [self.BODY]
+
     def _parse_time(self, value, fallback):
         try:
             return datetime.datetime.strptime(value, "%H:%M").time()
@@ -211,6 +260,11 @@ class NotificationService:
     async def refresh_android_schedule(self):
         if not self.phone or self.notifications is None:
             return
+        # Изменения настроек и дел могут прийти во время планирования.
+        async with self._schedule_lock:
+            await self._refresh_android_schedule()
+
+    async def _refresh_android_schedule(self):
 
         # ИСПРАВЛЕНИЕ: Сначала ВСЕГДА отменяем все старые уведомления
         try:
@@ -232,14 +286,17 @@ class NotificationService:
         print(f"Scheduling {schedule_count} new notifications with interval {interval} min...")
         now = datetime.datetime.now()
         next_time = now + datetime.timedelta(minutes=interval)
+        data = self.data_provider() if self.data_provider is not None else None
+        notification_id = 100000
 
         for index in range(schedule_count):
             next_time = self._next_allowed_datetime(next_time, settings)
             delay_seconds = max(1, int((next_time - now).total_seconds()))
-            notification_id = 100000 + index
-            await self._schedule_android_notification(
-                notification_id, delay_seconds, self.TITLE, self.BODY,
-            )
+            for body in self._notification_bodies(settings, next_time, data):
+                await self._schedule_android_notification(
+                    notification_id, delay_seconds, self.TITLE, body,
+                )
+                notification_id += 1
             next_time += datetime.timedelta(minutes=interval)
 
         self.last_scheduled_at = next_time - datetime.timedelta(minutes=interval)
@@ -279,10 +336,17 @@ class NotificationService:
             self.page.run_task(self.refresh_android_schedule)
         else:
             threading.Thread(
-                target=self.show_desktop_notification,
-                args=(self.TITLE, self.BODY),
+                target=self._notify_desktop,
                 daemon=True,
             ).start()
+
+    def _notify_desktop(self):
+        settings = self.settings_provider()
+        now = datetime.datetime.now()
+        if not settings["notifications_enabled"] or self._is_in_quiet_hours(now, settings):
+            return
+        for body in self._notification_bodies(settings, now):
+            self.show_desktop_notification(self.TITLE, body)
 
     async def _schedule_android_notification(
             self,

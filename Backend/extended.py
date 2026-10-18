@@ -329,6 +329,8 @@ class Backend2:
             "button_custom_color": "#5659F0",
             "notifications_enabled": "False" if self.web else "True",
             "notification_interval": "15",
+            "notification_important_enabled": "False",
+            "notification_deadline_enabled": "False",
             "notification_quiet_enabled": "False",
             "notification_quiet_start": "22:00",
             "notification_quiet_end": "08:00",
@@ -373,6 +375,8 @@ class Backend2:
             "button_custom_color",
             "notifications_enabled",
             "notification_interval",
+            "notification_important_enabled",
+            "notification_deadline_enabled",
             "notification_quiet_enabled",
             "notification_quiet_start",
             "notification_quiet_end",
@@ -533,6 +537,12 @@ class Backend2:
                 settings.get("notifications_enabled", "True")
             ),
             'notification_interval': self._normalize_notification_interval(settings.get("notification_interval", "15")),
+            'notification_important_enabled': False if self.web else self._to_bool(
+                settings.get("notification_important_enabled", "False")
+            ),
+            'notification_deadline_enabled': False if self.web else self._to_bool(
+                settings.get("notification_deadline_enabled", "False")
+            ),
             'notification_quiet_enabled': False if self.web else self._to_bool(
                 settings.get("notification_quiet_enabled", "False")
             ),
@@ -577,6 +587,8 @@ class Backend2:
         settings = self._settings_read()
         if self.web and setting in {
             "notifications_enabled",
+            "notification_important_enabled",
+            "notification_deadline_enabled",
             "notification_quiet_enabled",
         }:
             status = False
@@ -600,7 +612,11 @@ class Backend2:
             status = normalize_button_background_mode(status)
         elif setting == "button_custom_color":
             status = normalize_custom_color(status)
-        elif setting == "notification_quiet_enabled":
+        elif setting in {
+            "notification_quiet_enabled",
+            "notification_important_enabled",
+            "notification_deadline_enabled",
+        }:
             status = self._to_bool(str(status)) if isinstance(status, str) else bool(status)
         elif setting == "notification_quiet_start":
             status = self._normalize_time_value(status, "22:00")

@@ -46,6 +46,7 @@ class Backend:
         self.page = page
         self._undo_state = None
         self.on_undo_change = None
+        self.on_data_change = None
         # web_store не None -> сайт, page.web is True: данные каждого
         # посетителя хранятся у него в браузере (см. Backend/webstorage.py),
         # а не в файлах на сервере.
@@ -104,6 +105,10 @@ class Backend:
             save_all_sections(self.data_dir, data)
         self._undo_state = (deepcopy(previous), deepcopy(data)) if undoable else None
         self._notify_undo_change()
+
+        callback = getattr(self, 'on_data_change', None)
+        if callback:
+            callback()
 
     def is_authenticated(self):
         cloud = getattr(self, "cloud", None)

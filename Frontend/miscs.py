@@ -133,7 +133,7 @@ class Utils:
             details.append(self._task_badge(
                 ft.Icons.FLAG_OUTLINED, priority, priority_color,
             ))
-        if attachments:
+        if attachments and not self.phone:
             details.append(attachment_controls(self.libs, attachments))
         if details:
             task_content = ft.Column(
@@ -182,6 +182,18 @@ class Utils:
             if self.phone else
             [cont_with_actions, *([checkbox] if checkbox is not None else []), text_container]
         )
+        if attachments and self.phone:
+            # Share the whole card body with filenames so their buttons line up
+            # at the right edge, below the task actions.
+            body = ft.Column([
+                ft.Row(
+                    [text_container, cont_with_actions],
+                    spacing=4 if self.phone else 10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                attachment_controls(self.libs, attachments),
+            ], spacing=3 if self.phone else 6, tight=True, expand=True)
+            row_controls = [*([checkbox] if checkbox is not None else []), body]
         row_with_task = ft.Container(
             content=ft.Row(
                 controls=row_controls,

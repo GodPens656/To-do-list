@@ -114,7 +114,10 @@ class Front(NotesMixin):
             self.phone,
             self.back2.read_settings,
             web=self.web,
+            data_provider=self.back._load,
         )
+
+        self.back.on_data_change = self.notification_service.data_changed
 
         """Фоновое автообновление дел из облака раз в 10 минут"""
         self.auto_update_service = AutoUpdateService(
@@ -2330,6 +2333,7 @@ class Front(NotesMixin):
 
             async def do_update_and_finish():
                 await asyncio.to_thread(self.cloud.alg_for_start_app)
+                self.notification_service.data_changed()
 
                 self.tasks_cont.content.controls = base
                 if not self.web:
@@ -2347,6 +2351,8 @@ class Front(NotesMixin):
             self.page.run_task(do_update_and_finish)
         else:
             self.cloud.alg_for_start_app()
+
+            self.notification_service.data_changed()
 
             self.tasks_cont.content.controls = base
 
@@ -2388,6 +2394,7 @@ class Front(NotesMixin):
         # вызов выполняется вне event loop, чтобы автообновление не
         # замораживало страницу в нативном приложении и на сайте.
         await asyncio.to_thread(self.cloud.alg_for_start_app)
+        self.notification_service.data_changed()
         self._refresh_undo_buttons()
         self.tasks_cont.content.controls = base
         self.check_and_add_repeat_task()

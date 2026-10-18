@@ -2,11 +2,13 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import flet as ft
 
 from Backend.core import Backend
+from Backend.attachments import AttachmentQuotaError, attachment_bytes, attachment_usage, make_attachment
 from Backend.storage import load_data, save_data, save_all_sections
 from Backend.webstorage import WebSessionStore
 from test_ui_state import make_front
@@ -43,7 +45,8 @@ class NoteStorageTests(unittest.TestCase):
 
     def test_notes_survive_native_browser_and_cloud_payload_round_trips(self):
         group_id = self.back.create_group('Записи', group_type='notes')
-        self.back.save_note(group_id, 'Сохранённая заметка\nс переносом')
+        self.back.save_note(group_id, 'Сохранённая заметка\nс переносом',
+                            attachments=[make_attachment('данные.bin', bytes(range(256)))])
         expected = self.back.read_notes(group_id)
         with tempfile.TemporaryDirectory() as directory:
             save_all_sections(directory, self.store.load_all_sections())
@@ -70,8 +73,114 @@ class NoteStorageTests(unittest.TestCase):
         reopened = Backend(page=self.page, web_store=reopened_store, cloud=Mock())
         self.assertEqual(reopened.read_notes(group_id), expected)
 
+    def test_note_files_are_copied_preserved_on_text_edit_and_restored_by_undo(self):
+        group_id = self.back.create_group('Файлы', group_type='notes')
+        files = [make_attachment('file.txt', b'contents')]
+        note_id = self.back.save_note(group_id, 'Текст', attachments=files)
+        files[0]['name'] = 'changed.txt'
+        notes = self.back.read_notes(group_id)
+        self.assertEqual(notes[0]['attachments'][0]['name'], 'file.txt')
+        notes[0]['attachments'].clear()
+        self.back.save_note(group_id, 'Изменённый текст', note_id)
+        self.assertEqual(attachment_bytes(self.back.read_notes(group_id)[0]['attachments'][0]), b'contents')
+        self.back.save_note(group_id, 'Без файла', note_id, attachments=[])
+        self.assertEqual(self.back.read_notes(group_id)[0]['attachments'], [])
+        self.assertTrue(self.back.undo_last_action())
+        self.assertEqual(len(self.back.read_notes(group_id)[0]['attachments']), 1)
+        self.back.delete_note(group_id, note_id)
+        self.assertTrue(self.back.undo_last_action())
+        self.assertEqual(attachment_bytes(self.back.read_notes(group_id)[0]['attachments'][0]), b'contents')
+
+    def test_notes_and_tasks_share_quota_and_replacements_credit_existing_files(self):
+        group_id = self.back.create_group('Файлы', group_type='notes')
+        self.back.cloud.check_user_data.return_value = True
+        with patch('Backend.attachments.MAX_ACCOUNT_BYTES', 10):
+            self.back.saveB('Дело', attachments=[make_attachment('task.txt', b'1234')])
+            note_id = self.back.save_note(group_id, 'Заметка', attachments=[make_attachment('note.txt', b'123456')])
+            self.assertEqual(attachment_usage(self.back._load()), 10)
+            self.back.validate_attachment_selection(
+                [make_attachment('replacement.txt', b'abcdef')], note_id, 'notes', group_id=group_id)
+            with self.assertRaises(AttachmentQuotaError):
+                self.back.validate_attachment_selection(
+                    [make_attachment('extra.txt', b'x')], section='notes', group_id=group_id)
+            with self.assertRaises(AttachmentQuotaError):
+                self.back.save_note(group_id, 'Ещё заметка', attachments=[make_attachment('extra.txt', b'x')])
+            self.assertEqual(len(self.back.read_notes(group_id)), 1)
+            self.back.save_note(group_id, 'Текст изменён', note_id)
+            self.back.save_note(group_id, 'Без файла', note_id, attachments=[])
+            self.assertEqual(attachment_usage(self.back._load()), 4)
+
 
 class NoteGroupUITests(unittest.TestCase):
+    def test_attachment_create_cancel_edit_remove_and_quota_error_on_both_layouts(self):
+        for phone in (False, True):
+            with self.subTest(phone=phone):
+                front = make_front(phone=phone)
+                front.page.services = []
+                front.open_page = Mock()
+                front.close_page = Mock()
+                group_id = front.back.create_group('Файлы', group_type='notes')
+                front.current_group_id = group_id
+
+                def editor(note=None):
+                    front.open_note_editor(note)
+                    form = front.open_page.call_args.args[1]
+                    files = form.content.controls[-2].controls[0].on_click.__self__
+                    save = form.content.controls[-1].controls[0]
+                    return files, save
+
+                files, save = editor()
+                selected = SimpleNamespace(name='файл.txt', bytes=b'original', size=8, path=None)
+                with patch.object(ft.FilePicker, 'pick_files', new=AsyncMock(return_value=[selected])) as pick:
+                    asyncio.run(files.pick(None))
+                self.assertIn('заметке', pick.call_args.kwargs['dialog_title'])
+                front.libs.entry_task.value = 'С файлом'
+                save.on_click(None)
+                note = front.back.read_notes(group_id)[0]
+                self.assertEqual(attachment_bytes(note['attachments'][0]), b'original')
+                card = next(c for c in front.tasks_cont.content.controls if c.data == note['text'])
+
+                def descendants(control):
+                    yield control
+                    for child in getattr(control, 'controls', None) or []:
+                        yield from descendants(child)
+                    content = getattr(control, 'content', None)
+                    if isinstance(content, ft.Control):
+                        yield from descendants(content)
+
+                self.assertTrue(any(isinstance(c, ft.IconButton) and c.tooltip == 'Скачать файл'
+                                    for c in descendants(card)))
+                files, save = editor(note)
+                files.remove(files.attachments[0])
+                front.close_page()  # Cancelled draft must not change stored files.
+                self.assertEqual(front.back.read_notes(group_id)[0]['attachments'], note['attachments'])
+                files, save = editor(note)
+                files.remove(files.attachments[0])
+                save.on_click(None)
+                self.assertEqual(front.back.read_notes(group_id)[0]['attachments'], [])
+                self.assertTrue(front.back.undo_last_action())
+                self.assertEqual(front.back.read_notes(group_id)[0]['attachments'], note['attachments'])
+                files, save = editor()
+                self.assertEqual(files.values(), [])
+                front.back.cloud.check_user_data.return_value = True
+                with patch('Backend.attachments.MAX_ACCOUNT_BYTES', 10):
+                    with patch.object(ft.FilePicker, 'pick_files', new=AsyncMock(return_value=[selected])):
+                        asyncio.run(files.pick(None))
+                    self.assertTrue(files.error.visible)
+                    self.assertEqual(files.values(), [])
+                    smaller = SimpleNamespace(name='draft.txt', bytes=b'12', size=2, path=None)
+                    with patch.object(ft.FilePicker, 'pick_files', new=AsyncMock(return_value=[smaller])):
+                        asyncio.run(files.pick(None))
+                    self.assertFalse(files.error.visible)
+                    front.back.saveB('Между выбором и сохранением', attachments=[make_attachment('one', b'1')])
+                    front.close_page.reset_mock()
+                    front.libs.entry_task.value = 'Черновик'
+                    save.on_click(None)
+                    front.close_page.assert_not_called()
+                    self.assertEqual(len(front.back.read_notes(group_id)), 1)
+                    self.assertEqual(len(files.values()), 1)
+                    self.assertEqual(front.page.show_dialog.call_args.args[0].title.value, ' Лимит вложений')
+
     def test_create_group_form_selects_type(self):
         front = make_front()
         front.open_modified_dialog = Mock()

@@ -32,6 +32,7 @@ from .crypto import (
     read_text as read_encrypted_text,
     write_text as write_encrypted_text,
 )
+from .shared_groups import SharedGroupsMixin, personal_groups, personal_tasks
 CLOUD_ROOT = "/For_to-do"
 BACKUP_INTERVAL = timedelta(days=7)
 BACKUP_CHECK_SECONDS = 60 * 60
@@ -65,7 +66,7 @@ def _is_retryable_error(exc):
     return is_retryable_error(exc) or _is_locked_error(exc) or _is_content_length_error(exc)
 
 
-class Cloud:
+class Cloud(SharedGroupsMixin):
 
     _connect = None
     _disk = None
@@ -417,6 +418,7 @@ class Cloud:
                     if preserve_local:
                         self.request_upload(login_password)
                     return False
+                self._shared_account_snapshot(result, self._shared_load(), preserve_local, login_password)
                 if self.web:
                     data = self.web_store.load_all_sections()
                     data.update(result)
@@ -497,11 +499,18 @@ class Cloud:
         filename = SECTION_FILENAMES[key]
         cloud_file = self.cloud_path(CLOUD_ROOT, login_password, filename)
         if self.web:
-            value, _ = self.web_store.section_snapshot(key)
+            with self.file_lock():
+                value, _ = self.web_store.section_snapshot(key)
+                groups = self.web_store.load_all_sections()["groups"] if key == "tasks" else []
             version = self._fingerprint(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8"))
             payload = (
                 json.dumps(value, ensure_ascii=False, indent=2) + "\n"
             ).encode("utf-8")
+            if key == "tasks":
+                payload = (json.dumps(personal_tasks({"tasks": value, "groups": groups}),
+                                      ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+            elif key == "groups":
+                payload = (json.dumps(personal_groups(value), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
             if self.account_encryption_enabled(login_password):
                 payload = encrypt_bytes(payload)
             delay = 0.5
@@ -530,6 +539,13 @@ class Cloud:
                         payload = local_path.read_bytes()
                         version = self._fingerprint(payload)
                         plain = decrypt_bytes(payload)
+                        if key == "tasks":
+                            data = self._shared_load()
+                            data["tasks"] = json.loads(plain.decode("utf-8"))
+                            plain = (json.dumps(personal_tasks(data), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+                        elif key == "groups":
+                            groups = personal_groups(json.loads(plain.decode("utf-8")))
+                            plain = (json.dumps(groups, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
                         cloud_payload = (encrypt_bytes(plain) if self.account_encryption_enabled(login_password)
                                          else plain)
                         snapshot_path.write_bytes(cloud_payload)
@@ -559,6 +575,7 @@ class Cloud:
             return self._upload(login_password, max_retries, force)
 
     def _upload(self, login_password, max_retries=5, force=False):
+        self.sync_shared_groups()
         self.account_encryption_enabled(login_password, refresh=True)
         self._set_local_account_encryption(login_password, self.account_encryption_enabled(login_password))
         pending = list(SECTION_FILENAMES) if force else [
@@ -687,7 +704,10 @@ class Cloud:
                 login_password = self._pending_login_password
                 self._pending_login_password = None
             try:
-                self.upload(login_password)
+                if login_password:
+                    self.upload(login_password)
+                else:
+                    self.sync_shared_groups()
             except Exception as exc:
                 print(f"Ошибка фоновой выгрузки: {type(exc).__name__}")
 
@@ -791,6 +811,7 @@ class Cloud:
                 print(e-s,'старт апп')
             else:
                 itog["Have account"] = False
+            self.sync_shared_groups()
         return itog
 
     def alg_for_regist(self, login, password):
@@ -845,3 +866,8 @@ class Cloud:
             if self.connect:
                 a = self.read_user_data_text().split("~~")
                 self.request_upload(a[0])
+        elif self.connect:
+            with self.file_lock():
+                has_shared = any(g.get("shared_group") for g in self._shared_load()["groups"])
+            if has_shared:
+                self.request_upload("")

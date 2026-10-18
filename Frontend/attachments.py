@@ -38,7 +38,7 @@ def prepare_attachments(selected, existing, *, web):
         attachment = make_attachment(item.name, content)
         total += attachment["size"]
         if total > MAX_TASK_BYTES:
-            raise ValueError("Общий размер вложений дела не должен превышать 20 МБ.")
+            raise ValueError("Общий размер вложений одной записи не должен превышать 20 МБ.")
         pending.append(attachment)
     return pending
 
@@ -110,11 +110,13 @@ def attachment_controls(libs, attachments, on_remove=None):
 
 
 class AttachmentEditor:
-    def __init__(self, libs, attachments=None, *, back=None, task_id=None, section="tasks"):
+    def __init__(self, libs, attachments=None, *, back=None, task_id=None, section="tasks", group_id=None):
         self.libs = libs
         self.back = back
         self.task_id = task_id
         self.section = section
+        self.group_id = group_id
+        self.item_label = "заметку" if section == "notes" else "дело"
         self.attachments = deepcopy(attachments or [])
         self.error = ft.Text("", color=ft.Colors.RED_400, visible=False,
                              size=libs.text_size(12))
@@ -122,7 +124,7 @@ class AttachmentEditor:
         self.add = ft.TextButton("Прикрепить файлы", icon=ft.Icons.ATTACH_FILE_ROUNDED,
                                  icon_color=libs.FletIconColor,
                                  style=ft.ButtonStyle(color=libs.TxtColor),
-                                 tooltip="До 10 МБ на файл и до 20 МБ на дело",
+                                 tooltip=f"До 10 МБ на файл и до 20 МБ на {self.item_label}",
                                  on_click=self.pick)
         self.limit = ft.Text("Общий лимит вложений аккаунта — 10 МБ",
                              size=libs.text_size(12), color=libs.TxtColor, visible=False)
@@ -142,7 +144,7 @@ class AttachmentEditor:
         self.add.tooltip = (
             "Общий объём вложений аккаунта — до 10 МБ"
             if self.limit.visible
-            else "До 10 МБ на файл и до 20 МБ на дело"
+            else f"До 10 МБ на файл и до 20 МБ на {self.item_label}"
         )
         self.files.controls = attachment_controls(
             self.libs, self.attachments, self.remove,
@@ -163,7 +165,8 @@ class AttachmentEditor:
         self.libs.page.update()
         try:
             selected = await file_picker(self.libs.page).pick_files(
-                dialog_title="Прикрепить файлы к делу", allow_multiple=True,
+                dialog_title="Прикрепить файлы к заметке" if self.section == "notes" else "Прикрепить файлы к делу",
+                allow_multiple=True,
                 # Native paths are readable by Python. Sending file bytes through
                 # Flet first can stall/disconnect the client before size validation.
                 with_data=self.libs.page.web,
@@ -174,8 +177,9 @@ class AttachmentEditor:
                 prepare_attachments, selected, self.values(), web=self.libs.page.web,
             )
             if self.back is not None:
+                kwargs = {"group_id": self.group_id} if self.section == "notes" else {}
                 self.back.validate_attachment_selection(
-                    self.attachments + pending, self.task_id, self.section,
+                    self.attachments + pending, self.task_id, self.section, **kwargs,
                 )
             self.attachments.extend(pending)
             self.refresh()

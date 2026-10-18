@@ -2239,10 +2239,18 @@ class Front(NotesMixin):
             icon_color=self.libs.colors["MutedColor"],
             tooltip="Действия с группой",
             items=[
-                ft.PopupMenuItem(content="Редактировать", on_click=edit_group),
+                ft.PopupMenuItem(content="Редактировать", icon=ft.Icons.EDIT_ROUNDED,
+                                 on_click=edit_group),
                 *([] if group_id == 'default' else [
-                    ft.PopupMenuItem(content="Удалить", on_click=delete_group)
+                    ft.PopupMenuItem(content="Отключить" if group.get("is_shared") else "Удалить",
+                                     icon=ft.Icons.LINK_OFF_ROUNDED if group.get("is_shared") else ft.Icons.DELETE_ROUNDED,
+                                     on_click=delete_group)
                 ]),
+                *([ft.PopupMenuItem(
+                    content="Сделать группу общей",
+                    icon=ft.Icons.GROUP_ADD_ROUNDED,
+                    on_click=lambda _: self._open_share_group_dialog(group),
+                )] if not group.get("is_shared") else []),
             ],
         )
         total, done = (counts if counts is not None else self._group_task_counts()).get(group_id, (0, 0))
@@ -2262,6 +2270,9 @@ class Front(NotesMixin):
                         size=self.libs.text_size(12), color=self.libs.colors["MutedColor"],
                         visible=group.get("show_completion_counter", True)),
             ], spacing=4, expand=True, tight=True),
+            *([ft.Icon(ft.Icons.LINK_ROUNDED, size=20, color=self.libs.FletIconColor,
+                       tooltip="Подключена общая группа")]
+              if group.get("is_shared") else []),
             ft.Icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, size=20,
                     color=self.libs.colors["MutedColor"]),
         ], spacing=12)
@@ -2269,6 +2280,49 @@ class Front(NotesMixin):
         group_btn.expand = True
         group_btn.on_click = open_group
         groups_column.controls.append(ft.Row([group_btn, menu]))
+
+    def _open_share_group_dialog(self, group):
+        password = ft.TextField(label="Пароль общей группы", password=True,
+                                can_reveal_password=True, color=self.TxtColor)
+        shared_content = "заметки и их вложения" if group.get("type") == "notes" else "только обычные дела"
+        message = ft.Text(f"Общими станут {shared_content}. Для подключения нужны название группы и пароль.",
+                          size=self.libs.text_size(14), color=self.TxtColor)
+        create = self.libs.create_style_button("Сделать общей")
+        cancel = self.libs.create_style_button("Назад")
+        progress = ft.ProgressRing(width=20, height=20, visible=False)
+
+        async def share(_):
+            if create.disabled:
+                return
+            create.disabled = password.disabled = cancel.disabled = True
+            progress.visible = True
+            self.page.update()
+            success = False
+            try:
+                await asyncio.to_thread(self.back.make_group_shared, group["id"], password.value or "")
+                success = True
+            except ValueError as exc:
+                message.value = str(exc)
+                message.color = ft.Colors.RED
+            except Exception:
+                message.value = "Не удалось создать общую группу. Проверьте подключение к Dropbox и повторите."
+                message.color = ft.Colors.RED
+            finally:
+                create.disabled = password.disabled = cancel.disabled = False
+                progress.visible = False
+            if success:
+                password.value = ""
+                self.show_groups()
+            else:
+                self.page.update()
+
+        create.on_click = share
+        password.on_submit = share
+        content = self.libs.create_style_cont([
+            ft.Text(group["name"], size=self.libs.text_size(18), color=self.TxtColor),
+            password, message, ft.Row([create, progress], wrap=True), cancel,
+        ])
+        self.open_modified_dialog(self.libs.create_style_header("Общая группа"), content, cancel)
 
     def _open_create_group(self, _=None):
         """Открывает форму создания группы."""

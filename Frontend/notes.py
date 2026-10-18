@@ -1,5 +1,7 @@
 """Создание, редактирование и показ заметок внутри группы."""
 
+from .attachments import AttachmentEditor
+
 class NotesMixin:
     def open_note_editor(self, note=None):
         group_id = self.current_group_id
@@ -18,11 +20,21 @@ class NotesMixin:
         # Enter всегда вставляет перенос; сохранение — отдельной кнопкой.
         entry.shift_enter = False
         entry.on_submit = None
+        attachments = AttachmentEditor(
+            self.libs, note.get('attachments') if note else None,
+            back=self.back, task_id=note['id'] if note else None,
+            section="notes", group_id=group_id,
+        )
+        dialog['Main Cont'].content.controls.insert(-1, attachments.control)
 
+        @self._guard_attachment_quota
         def save(_):
             if not self._validate_text_length(entry):
                 return
-            saved = self.back.save_note(group_id, entry.value, note['id'] if note else None)
+            saved = self.back.save_note(
+                group_id, entry.value, note['id'] if note else None,
+                attachments=attachments.values(),
+            )
             if saved is None:
                 entry.error = "Введите текст заметки"
                 self._update_control(entry)
@@ -47,6 +59,7 @@ class NotesMixin:
                 self.back.auto_add_new_string(note['text']), False, note['id'],
                 created_date, self.current_group_id, show_checkbox=False,
                 group_settings=group_settings,
+                attachments=note.get('attachments'),
             )
             card.data = note['text']
             text.selectable = True

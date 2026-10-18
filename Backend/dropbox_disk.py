@@ -88,6 +88,8 @@ def _content_hash(payload):
 
 def _path_error(error):
     # SDK endpoints wrap LookupError/WriteError in different union variants.
+    if isinstance(error, files.UploadWriteFailed):
+        return _path_error(error.reason)
     for tag in ("path", "path_lookup", "path_write", "from_lookup", "to"):
         check = getattr(error, "is_" + tag, None)
         if check and check():
@@ -161,7 +163,8 @@ class DropboxDisk:
     def _meta(meta):
         return SimpleNamespace(name=meta.name,
                                type="file" if isinstance(meta, files.FileMetadata) else "dir",
-                               size=getattr(meta, "size", None), sha256=None)
+                               size=getattr(meta, "size", None), sha256=None,
+                               rev=getattr(meta, "rev", None))
 
     def check_connection(self):
         with self._lock:
@@ -199,10 +202,11 @@ class DropboxDisk:
         with self._lock:
             self._call("files_create_folder_v2", self._path(path), autorename=False)
 
-    def upload(self, source, destination, overwrite=False, **kwargs):
+    def upload(self, source, destination, overwrite=False, revision=None, **kwargs):
         with self._lock:
             path = self._path(destination)
-            mode = files.WriteMode.overwrite if overwrite else files.WriteMode.add
+            mode = (files.WriteMode.update(revision) if revision is not None else
+                    files.WriteMode.overwrite if overwrite else files.WriteMode.add)
             close_source = isinstance(source, (str, os.PathLike))
             stream = open(source, "rb") if close_source else source
             try:
@@ -252,7 +256,7 @@ class DropboxDisk:
                 temporary.seek(0)
                 if hasattr(destination, "write"):
                     shutil.copyfileobj(temporary, destination)
-                    return
+                    return meta
                 target = Path(destination)
                 staged = None
                 try:
@@ -263,6 +267,7 @@ class DropboxDisk:
                 finally:
                     if staged is not None:
                         staged.unlink(missing_ok=True)
+                return meta
 
     def copy(self, source, destination, overwrite=False, **kwargs):
         if overwrite:

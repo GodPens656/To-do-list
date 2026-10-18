@@ -53,7 +53,7 @@ class Backend:
         self.web = web_store is not None
         self.Save_in_time = ""
         self.phone = False
-        self.version = '3.12.0'
+        self.version = '3.13.0'
         if self.web:
             self.store = web_store
             self.cloud = cloud or Cloud(web_store=web_store)
@@ -114,16 +114,24 @@ class Backend:
         cloud = getattr(self, "cloud", None)
         return cloud is not None and cloud.check_user_data() is True
 
-    def validate_attachment_selection(self, attachments, task_id=None, section="tasks"):
+    def validate_attachment_selection(self, attachments, task_id=None, section="tasks", *, group_id=None):
         if not self.is_authenticated():
             return
         previous = self._load()
         proposed = deepcopy(previous)
-        target = next((task for task in proposed[section]
+        if section == "notes":
+            group = next((g for g in proposed["groups"]
+                          if g.get("id") == group_id and g.get("type") == "notes"), None)
+            if group is None:
+                raise ValueError("Группа заметок больше не существует.")
+            items = group.setdefault("notes", [])
+        else:
+            items = proposed[section]
+        target = next((task for task in items
                        if task_id is not None and task.get("id") == task_id), None)
         if target is None:
             target = {}
-            proposed[section].append(target)
+            items.append(target)
         target["attachments"] = attachments
         validate_account_quota(previous, proposed)
 
@@ -294,12 +302,24 @@ class Backend:
                 'id': group.get('id'),
                 'type': group.get('type', 'tasks'),
                 'note_count': len(group.get('notes', [])),
+                'is_shared': bool(group.get('shared_group')),
+                'shared_name': (group.get('shared_group') or {}).get('name', ''),
                 'split_by_dates': bool(group.get('split_by_dates', True)),
                 'show_created_date': bool(group.get('show_created_date', True)),
                 'show_completion_counter': bool(group.get('show_completion_counter', True)),
                 'show_group_title': bool(group.get('show_group_title', True)),
             })
         return groups
+
+    def make_group_shared(self, group_id, password):
+        result = self.cloud.make_group_shared(group_id, password)
+        self.clear_undo()
+        return result
+
+    def connect_shared_group(self, name, password):
+        result = self.cloud.connect_shared_group(name, password)
+        self.clear_undo()
+        return result
 
     def get_group_settings(self, group_id):
         """Возвращает персональные настройки конкретной группы дел:
@@ -426,10 +446,10 @@ class Backend:
         """Заметки хранятся внутри группы и синхронизируются с groups.json."""
         for group in self._load()['groups']:
             if group.get('id') == group_id and group.get('type') == 'notes':
-                return [note.copy() for note in group.get('notes', [])]
+                return deepcopy(group.get('notes', []))
         return []
 
-    def save_note(self, group_id, text, note_id=None):
+    def save_note(self, group_id, text, note_id=None, *, attachments=None):
         if not text or not text.strip() or text_length_error(text):
             return None
         data = self._load()
@@ -439,15 +459,19 @@ class Backend:
             notes = group.setdefault('notes', [])
             if note_id is None:
                 note_id = uuid.uuid4().hex
-                notes.append({
+                note = {
                     'id': note_id, 'text': text,
                     'created_date': local_today(self.web, self.page).strftime('%d-%m-%Y'),
-                })
+                    'attachments': deepcopy(attachments or []),
+                }
+                notes.append(note)
             else:
                 note = next((n for n in notes if n.get('id') == note_id), None)
                 if note is None:
                     return None
                 note['text'] = text
+                if attachments is not None:
+                    note['attachments'] = deepcopy(attachments)
             self._save(data)
             return note_id
         return None

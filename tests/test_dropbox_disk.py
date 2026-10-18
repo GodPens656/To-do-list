@@ -119,6 +119,24 @@ class DropboxDiskTests(unittest.TestCase):
         self.assertFalse(commit.autorename)
         self.assertTrue(commit.strict_conflict)
 
+    def test_conditional_upload_uses_revision_and_reports_write_conflicts(self):
+        self.disk.upload(io.BytesIO(b"shared tasks"), "/shared/tasks.json", revision="abcdef123")
+        self.assertEqual(self.client.files_upload.call_args.kwargs["mode"],
+                         files.WriteMode.update("abcdef123"))
+        self.client.files_upload.side_effect = exceptions.ApiError(
+            "request", files.UploadError.path(files.UploadWriteFailed(
+                reason=files.WriteError.conflict(files.WriteConflictError.file), upload_session_id="")),
+            None, None)
+        with self.assertRaises(FileExistsError):
+            self.disk.upload(io.BytesIO(b"shared tasks"), "/shared/tasks.json", revision="abcdef123")
+
+    def test_download_returns_revision_of_the_verified_content(self):
+        self.response(b"shared tasks")
+        metadata = self.client.files_download.return_value[0]
+        metadata.rev = "abcdef123"
+        result = self.disk.download("/shared/tasks.json", io.BytesIO())
+        self.assertEqual(result.rev, "abcdef123")
+
     def response(self, payload, *, checksum=None):
         response = Mock()
         response.iter_content.return_value = [payload[:2], payload[2:]]

@@ -1,4 +1,4 @@
-"""Portable file attachments stored inside the task's encrypted JSON section."""
+"""Portable file attachments stored inside encrypted task and note sections."""
 
 import base64
 import binascii
@@ -21,8 +21,10 @@ def attachment_usage(data):
     """Count original bytes; generated tasks can reference the same attachment."""
     seen = set()
     total = 0
-    for section in ("tasks", "repeat_tasks", "postponed"):
-        for task in data.get(section, []):
+    collections = [data.get(section, []) for section in ("tasks", "repeat_tasks", "postponed")]
+    collections.extend(group.get("notes", []) for group in data.get("groups", []))
+    for items in collections:
+        for task in items:
             for attachment in task.get("attachments") or []:
                 content = attachment.get("content", "")
                 key = (attachment.get("id"), content)

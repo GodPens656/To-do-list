@@ -1,3 +1,4 @@
+import asyncio
 import flet as ft
 from datetime import datetime
 from .theme import get_theme_colors
@@ -334,6 +335,61 @@ class Utils:
 
         return main
 
+    def build_shared_groups_tile(self, page):
+        name = ft.TextField(label="Название общей группы", color=self.TxtColor)
+        password = ft.TextField(label="Пароль общей группы", password=True,
+                                can_reveal_password=True, color=self.TxtColor)
+        status = ft.Text("Подключайте общие группы дел и заметок по названию и паролю.", color=self.TxtColor,
+                         size=self.libs.text_size(13))
+        memberships = ft.Column(spacing=8)
+        connect = self.libs.create_style_button("Подключить общую группу")
+        progress = ft.ProgressRing(width=20, height=20, visible=False)
+
+        def refresh_memberships():
+            groups = [g for g in self.back.get_groups() if g.get("is_shared")]
+            memberships.controls = [ft.Row([
+                ft.Icon(ft.Icons.LINK_ROUNDED, color=self.libs.FletIconColor, size=20),
+                ft.Text(g.get("shared_name") or g["name"], expand=True,
+                        color=self.TxtColor, size=self.libs.text_size(15)),
+            ]) for g in groups] or [ft.Text("Вы пока не подключены к общим группам.",
+                                           color=self.TxtColor, size=self.libs.text_size(13))]
+
+        async def join(_):
+            if connect.disabled:
+                return
+            connect.disabled = name.disabled = password.disabled = True
+            progress.visible = True
+            page.update()
+            try:
+                await asyncio.to_thread(self.back.connect_shared_group, name.value or "", password.value or "")
+                password.value = name.value = ""
+                refresh_memberships()
+                status.value = "Общая группа подключена. Она доступна в списке групп."
+                status.color = self.TxtColor
+            except ValueError as exc:
+                status.value = str(exc)
+                status.color = ft.Colors.RED
+            except Exception:
+                status.value = "Не удалось подключить группу. Проверьте подключение к Dropbox и повторите."
+                status.color = ft.Colors.RED
+            finally:
+                connect.disabled = name.disabled = password.disabled = False
+                progress.visible = False
+            page.update()
+
+        connect.on_click = password.on_submit = join
+        refresh_memberships()
+        return self.libs.create_style_expansion_category(
+            ft.Icons.LINK_ROUNDED, "Общие группы",
+            [ft.Column(
+                [memberships, name, password, ft.Row([connect, progress], wrap=True), status],
+                spacing=14,
+                tight=True,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            )],
+            padding=ft.Padding.symmetric(horizontal=20, vertical=16),
+        )
+
     def build_widgets_for_login(self, page, function_for_update, login_cmd):
         """Постройка виджетов для диалога
         с авторизацией/регистрацией"""
@@ -447,6 +503,7 @@ class Utils:
                     ent_with_password,
                     cont_with_auth,
                     auth_accounts_tile,
+                    self.build_shared_groups_tile(page),
                     LlblT0,
                     LlblT,
                     LlblL,

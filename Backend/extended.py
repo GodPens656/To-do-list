@@ -692,6 +692,7 @@ class Backend2:
             "last_date": today_str,
             "repeat_type": repeat_type,
             "repeat_value": repeat_value,
+            "disabled": False,
             "group": group_id,
             "created_date": metadata.get("created_date") or today_str,
             "deadline": metadata.get("deadline") or "",
@@ -762,6 +763,8 @@ class Backend2:
         for item in data["repeat_tasks"]:
             if not isinstance(item, dict):
                 continue
+            if item.get("disabled", False):
+                continue
             repeat_type, repeat_value = self._normalize_repeat_rule(item.get("repeat_type", "day"), item.get("repeat_value", 1))
             last_date = item.get("last_date", "")
             group_id = item.get("group", "default") or "default"
@@ -810,9 +813,21 @@ class Backend2:
                 "priority": item.get("priority") or "Неважно",
                 "info_type": item.get("info_type") or "created_date",
                 "attachments": deepcopy(item.get("attachments") or []),
+                "disabled": bool(item.get("disabled", False)),
             }
             itog.append((task_text, repeat_type, repeat_value, group_id, task_id, metadata))
         return itog
+
+    def set_repeat_task_disabled(self, task_id, disabled=True):
+        """Отключает или включает создание повторяющегося дела по его ID."""
+        data = self._load()
+        for item in data["repeat_tasks"]:
+            if item.get("id") == task_id:
+                item["disabled"] = bool(disabled)
+                self._save(data)
+                self.cloud.alg_for_redact()
+                return True
+        return False
 
     def delete_repeat_task(self, name_task, group_id=None):
         data = self._load()

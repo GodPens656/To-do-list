@@ -589,16 +589,6 @@ class Utils2:
     def add_to_cont_with_repeat_task(self, task_name, repeat_type="day", repeat_value=1, group_id='default', task_id=None, metadata=None):
         """Функция для добавления в контейнер для повторяющихся дел"""
 
-        if self.phone or self.libs.icon_pack in {"minimalistic", "minimalistic-blue"}:
-            delete = self.libs.create_delete_button()
-
-            edit = self.libs.create_edit_button()
-        else:
-            delete = self.libs.build_button_with_image(
-                'basket1', tooltip='Удалить повторяющиеся дело')
-            edit = self.libs.build_button_with_image(
-                'redact', tooltip='Редактировать повторяющиеся дело')
-
         metadata = metadata or {}
         interval_text = self._describe_repeat_rule(repeat_type, repeat_value)
         extra_text = (
@@ -609,6 +599,23 @@ class Utils2:
             ) if metadata.get("info_type") == "deadline" else
             f"Важность: {metadata.get('priority', 'Неважно')}" if metadata.get("info_type") == "priority" else
             f"Создано: {metadata.get('created_date', '')}"
+        )
+        disabled = bool(metadata.get("disabled", False))
+        extra = ft.Text(
+            "Дело отключено" if disabled else extra_text,
+            size=self.libs.text_size(12),
+            color=ft.Colors.YELLOW_700 if disabled else self.TxtColor,
+            opacity=1 if disabled else 0.6,
+        )
+        delete = ft.PopupMenuItem(content="Удалить", icon=ft.Icons.DELETE_ROUNDED)
+        edit = ft.PopupMenuItem(content="Редактировать", icon=ft.Icons.EDIT_ROUNDED)
+        toggle = ft.PopupMenuItem(
+            content="Включить" if disabled else "Отключить",
+            icon=ft.Icons.PLAY_ARROW_ROUNDED if disabled else ft.Icons.PAUSE_ROUNDED,
+        )
+        menu = ft.PopupMenuButton(
+            icon=ft.Icons.MORE_VERT, icon_color=self.libs.colors["MutedColor"],
+            tooltip="Действия с повторяющимся делом", items=[delete, edit, toggle],
         )
 
         display_task_name = self.back.auto_add_new_string(task_name)
@@ -629,12 +636,12 @@ class Utils2:
                                 color=self.TxtColor,
                                 opacity=0.6,
                             ),
-                            ft.Text(extra_text, size=self.libs.text_size(12), color=self.TxtColor, opacity=0.6),
+                            extra,
                         ],
                         spacing=0,
                         expand=True,
                     ),
-                    edit, delete,
+                    menu,
                 ], scroll=None if self.phone else ft.ScrollMode.AUTO,
             )
 
@@ -645,6 +652,20 @@ class Utils2:
 
         delete.on_click = lambda _, r = row, t = task_name, g = group_id: cmd_for_delete(r, t, g)
         edit.on_click = lambda _, t=task_name, rt=repeat_type, rv=repeat_value, g=group_id, i=task_id, m=metadata: self.on_edit_repeat(t, rt, rv, g, i, m) if self.on_edit_repeat and i else None
+
+        def toggle_disabled(_):
+            disabled = not metadata.get("disabled", False)
+            if not self.back2.set_repeat_task_disabled(task_id, disabled):
+                return
+            metadata["disabled"] = disabled
+            extra.value = "Дело отключено" if disabled else extra_text
+            extra.color = ft.Colors.YELLOW_700 if disabled else self.TxtColor
+            extra.opacity = 1 if disabled else 0.6
+            toggle.content = "Включить" if disabled else "Отключить"
+            toggle.icon = ft.Icons.PLAY_ARROW_ROUNDED if disabled else ft.Icons.PAUSE_ROUNDED
+            self.libs.page.update()
+
+        toggle.on_click = toggle_disabled
 
         def cmd_for_delete(row_with_task, task_name, group_id):
             self.cont_with_repeat_task.content.controls.remove(row_with_task)

@@ -5,7 +5,7 @@ import binascii
 from io import BytesIO
 import uuid
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 
 MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -81,9 +81,12 @@ def attachment_bytes(attachment):
         raise ValueError("Содержимое вложения повреждено.") from error
 
 
-def image_preview(attachment):
+def image_preview(attachment, quarter_turns=0):
     """Render even TIFFs as a bounded PNG; downloads retain the original bytes."""
     with Image.open(BytesIO(attachment_bytes(attachment))) as img:
+        img = ImageOps.exif_transpose(img)
+        if quarter_turns % 4:
+            img = img.rotate(-90 * (quarter_turns % 4), expand=True)
         img.thumbnail((1600, 1600))
         preview = BytesIO()
         img.convert("RGBA").save(preview, format="PNG")

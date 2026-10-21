@@ -858,6 +858,26 @@ class Front(NotesMixin):
         """Функция для выхода из последнего диалога на ПК"""
         if e.key == "Escape":
             self.close_page()
+        elif e.key.upper() == "V" and (e.ctrl or e.meta) and not e.alt:
+            root = self.screen_stack[-1] if self.web and self.screen_stack else self.page.views[-1]
+
+            def find_editor(control):
+                if isinstance(getattr(control, "data", None), AttachmentEditor):
+                    return control.data
+                children = list(getattr(control, "controls", None) or [])
+                content = getattr(control, "content", None)
+                if isinstance(content, ft.Control):
+                    children.append(content)
+                for child in children:
+                    if isinstance(child, ft.Control) and child.visible:
+                        editor = find_editor(child)
+                        if editor is not None:
+                            return editor
+                return None
+
+            editor = find_editor(root)
+            if editor is not None:
+                self.page.run_task(editor.paste, None, quiet=True)
 
     def _on_view_pop(self, e=None):
         self.close_page()

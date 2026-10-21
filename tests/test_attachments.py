@@ -220,12 +220,14 @@ class AttachmentTests(unittest.TestCase):
         image = image_file()
         document = make_attachment("report.pdf", b"document")
         controls = attachment_controls(front.libs, [image, document])
-        self.assertEqual(len(controls.controls[0].controls[-1].controls), 2)
+        self.assertEqual(len(controls.controls[0].controls[-1].controls), 3)
         self.assertEqual(len(controls.controls[1].controls[-1].controls), 1)
         controls.controls[0].controls[-1].controls[0].on_click(None)
         dialog = front.page.show_dialog.call_args.args[0]
-        self.assertIsInstance(dialog.content.content, ft.Image)
-        self.assertEqual(len(dialog.actions), 2)
+        viewer = dialog.content.content.controls[0]
+        self.assertIsInstance(viewer, ft.InteractiveViewer)
+        self.assertIsInstance(viewer.content, ft.Image)
+        self.assertEqual(len(dialog.actions), 4)
         for web, mobile in ((True, False), (False, True), (False, False)):
             with self.subTest(web=web, mobile=mobile), tempfile.TemporaryDirectory() as directory:
                 destination = Path(directory) / "report.pdf"

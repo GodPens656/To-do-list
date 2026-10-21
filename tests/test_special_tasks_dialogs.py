@@ -103,13 +103,16 @@ class SpecialTaskDialogTests(unittest.TestCase):
                     self.assertIs(front.screen_stack[-1], list_screen)
                     self.assertEqual(len(tasks.content.controls), 1)
 
-                    tasks.content.controls[0].controls[-2].on_click(None)
+                    row = tasks.content.controls[0]
+                    edit = row.controls[-1].items[1] if repeating else row.controls[-2]
+                    edit.on_click(None)
                     front.libs.entry_task.value = "Изменённое дело"
                     front.libs.entry_task.on_submit(None)
                     self.assertIs(front.screen_stack[-1], list_screen)
                     row = tasks.content.controls[0]
                     self.assertEqual(row.controls[0].controls[0].value, "Изменённое дело")
-                    row.controls[-1].on_click(None)
+                    delete = row.controls[-1].items[0] if repeating else row.controls[-1]
+                    delete.on_click(None)
                     read = front.back2.read_repeat_tasks if repeating else front.back2.read_postponed_tasks
                     self.assertEqual(read(), [])
                     self.assertEqual(tasks.content.controls, [])

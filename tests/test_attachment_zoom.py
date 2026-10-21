@@ -25,7 +25,13 @@ class AttachmentZoomTests(unittest.TestCase):
                 open_preview = controls.controls[0].controls[-1].controls[0].on_click
                 open_preview(None)
                 dialog = front.page.show_dialog.call_args.args[0]
-                viewer, _, toolbar, _ = dialog.content.content.controls
+                viewer = dialog.content.content.controls[0]
+                if phone:
+                    _, clipboard_row, toolbar, _ = dialog.actions[0].content.controls
+                    close_button = clipboard_row.controls[1]
+                else:
+                    toolbar = dialog.content.content.controls[2]
+                    close_button = dialog.actions[-1]
                 preview_src = viewer.content.src
 
                 self.assertIsInstance(viewer, ft.InteractiveViewer)
@@ -48,7 +54,7 @@ class AttachmentZoomTests(unittest.TestCase):
 
                 self.assertEqual(viewer.content.src, preview_src)
                 self.assertEqual(attachment, original)
-                dialog.actions[-1].on_click(None)
+                close_button.on_click(None)
                 front.page.pop_dialog.assert_called_once()
                 open_preview(None)
                 reopened = front.page.show_dialog.call_args.args[0]

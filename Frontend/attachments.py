@@ -120,7 +120,7 @@ def attachment_controls(libs, attachments, on_remove=None):
             libs.open_dialog("Не удалось открыть изображение", str(error), page)
             return
         preview_width = min(900, max(200, (page.width or 360) - 80))
-        preview_height = max(150, min(650, (page.height or 800) - (340 if libs.phone else 220)))
+        preview_height = max(150, min(650, (page.height or 800) - (380 if libs.phone else 220)))
         image = ft.Image(src=content, fit=ft.BoxFit.CONTAIN,
                          width=preview_width, height=preview_height)
         # Leave alignment unset: Flet 0.82 forwards it without decoding.
@@ -144,6 +144,7 @@ def attachment_controls(libs, attachments, on_remove=None):
             ft.IconButton(ft.Icons.ZOOM_OUT_ROUNDED, tooltip="Уменьшить",
                           icon_color=libs.FletIconColor, on_click=zoom_out),
             ft.TextButton("Сбросить положение", tooltip="Сбросить масштаб и положение",
+                          expand=libs.phone,
                           style=ft.ButtonStyle(color=libs.TxtColor), on_click=fit_image),
             ft.IconButton(ft.Icons.ZOOM_IN_ROUNDED, tooltip="Увеличить",
                           icon_color=libs.FletIconColor, on_click=zoom_in),
@@ -174,23 +175,36 @@ def attachment_controls(libs, attachments, on_remove=None):
 
         rotate_button = ft.TextButton("Повернуть на 90°", icon=ft.Icons.ROTATE_RIGHT_ROUNDED,
                                       style=ft.ButtonStyle(color=libs.TxtColor), on_click=rotate)
+        copy_button = ft.TextButton("В буфер обмена", icon=ft.Icons.COPY_ROUNDED,
+                                    style=ft.ButtonStyle(color=libs.TxtColor),
+                                    on_click=lambda _: page.run_task(copy, attachment, preview_status))
+        download_button = ft.TextButton("Скачать", style=ft.ButtonStyle(color=libs.TxtColor),
+                                        on_click=lambda _: page.run_task(download, attachment))
+        close_button = ft.TextButton("Закрыть", style=ft.ButtonStyle(color=libs.TxtColor),
+                                     on_click=lambda _: page.pop_dialog())
+        preview_controls = [viewer, preview_status]
+        actions = [rotate_button, copy_button, download_button, close_button]
+        if libs.phone:
+            rotate_button.expand = copy_button.expand = True
+            actions = [ft.Container(
+                content=ft.Column([
+                    ft.Row([rotate_button, download_button], spacing=4),
+                    ft.Row([copy_button, close_button], spacing=4),
+                    zoom_controls,
+                    zoom_hint,
+                ], tight=True, spacing=4, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+                width=preview_width,
+            )]
+        else:
+            preview_controls.extend([zoom_controls, zoom_hint])
         page.show_dialog(ft.AlertDialog(
             title=ft.Text(attachment.get("name", "Изображение"), no_wrap=False),
             content=ft.Container(
-                content=ft.Column([viewer, preview_status, zoom_controls, zoom_hint], spacing=4),
+                content=ft.Column(preview_controls, spacing=4),
                 width=preview_width,
                 height=preview_height,
             ),
-            actions=[
-                rotate_button,
-                ft.TextButton("В буфер обмена", icon=ft.Icons.COPY_ROUNDED,
-                              style=ft.ButtonStyle(color=libs.TxtColor),
-                              on_click=lambda _: page.run_task(copy, attachment, preview_status)),
-                ft.TextButton("Скачать", style=ft.ButtonStyle(color=libs.TxtColor),
-                              on_click=lambda _: page.run_task(download, attachment)),
-                ft.TextButton("Закрыть", style=ft.ButtonStyle(color=libs.TxtColor),
-                              on_click=lambda _: page.pop_dialog()),
-            ],
+            actions=actions,
         ))
 
     rows = []

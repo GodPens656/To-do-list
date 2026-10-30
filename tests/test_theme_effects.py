@@ -21,7 +21,8 @@ class ThemeEffectTests(unittest.TestCase):
     def test_every_palette_and_layout_preserves_colors_with_glass(self):
         for style, _ in THEME_STYLE_OPTIONS:
             for dark in (False, True):
-                for phone, effect in ((False, "liquid_glass"), (True, "liquid_glass_half")):
+                for phone, effect in ((False, "liquid_glass"), (False, "liquid_glass_half"),
+                                      (True, "liquid_glass_half")):
                     with self.subTest(style=style, dark=dark, phone=phone, effect=effect):
                         front = make_front(style, dark, phone, effect=effect)
                         base = get_theme_colors(resolve_theme(style, front.page.platform_brightness))
@@ -38,8 +39,8 @@ class ThemeEffectTests(unittest.TestCase):
                             self.assertIsNotNone(front.page.theme.dialog_theme)
                             self.assertIsNotNone(front.page.theme.dropdown_theme.menu_style)
                         else:
-                            self.assertIsNone(front.page.theme.dialog_theme)
-                            self.assertIsNone(front.page.theme.dropdown_theme.menu_style)
+                            self.assertEqual(front.page.theme.dialog_theme.elevation, 0)
+                            self.assertEqual(front.page.theme.dropdown_theme.menu_style.elevation, 0)
                             self.assertIsNone(front.root_view.decoration)
                             self.assertIsNotNone(front.btns_cont.blur)
 
@@ -55,8 +56,10 @@ class ThemeEffectTests(unittest.TestCase):
                 for target in ("Frontend.init_page.Cloud", "Backend.core.Cloud", "Backend.extended.Cloud"):
                     stack.enter_context(patch(target, return_value=front.cloud))
                 final_effect = "liquid_glass_half" if phone else "liquid_glass"
-                effects = (final_effect, "none", final_effect)
-                options = [("none", "Нет"), (final_effect, "Liquid glass 0,5x" if phone else "Liquid glass")]
+                effects = ("liquid_glass_half", "none", final_effect)
+                options = [("none", "Нет"), ("liquid_glass_half", "Liquid glass 0,5x")]
+                if not phone:
+                    options.insert(1, ("liquid_glass", "Liquid glass"))
                 for effect in effects:
                     controls = front.utils2.build_widgets_for_customization().content.controls
                     label_index = next(i for i, c in enumerate(controls) if isinstance(c, ft.Text) and c.value == "Эффект:")
@@ -103,7 +106,7 @@ class ThemeEffectTests(unittest.TestCase):
             self.assertEqual(reopened.read_settings()["theme_effect"], "liquid_glass")
             reopened.redact_setting("theme_effect", "liquid_glass_half")
             reopened.set_default_settings()
-            self.assertEqual(reopened.read_settings()["theme_effect"], "liquid_glass")
+            self.assertEqual(reopened.read_settings()["theme_effect"], "liquid_glass_half")
             reopened.redact_setting("theme_effect", "none")
             self.assertEqual(reopened.read_settings()["theme_effect"], "none")
             reopened.redact_setting("theme_effect", "invalid")
@@ -115,16 +118,16 @@ class ThemeEffectTests(unittest.TestCase):
         self.assertEqual(front.theme_effect, "liquid_glass")
         self.assertNotIn("liquid_glass", dict(THEME_STYLE_OPTIONS))
 
-    def test_desktop_migrates_saved_half_glass_and_cannot_reenable_it(self):
+    def test_desktop_preserves_saved_half_glass(self):
         front = make_front("nord", effect="liquid_glass_half")
         self.assertEqual(front.theme_style, "nord")
-        self.assertEqual(front.theme_effect, "liquid_glass")
-        self.assertEqual(front.web_store._settings["theme_effect"], "liquid_glass")
+        self.assertEqual(front.theme_effect, "liquid_glass_half")
+        self.assertEqual(front.web_store._settings["theme_effect"], "liquid_glass_half")
         front.back2.redact_setting("theme_effect", "liquid_glass_half")
-        self.assertEqual(front.back2.read_settings()["theme_effect"], "liquid_glass")
-        self.assertEqual(front.web_store._settings["theme_effect"], "liquid_glass")
+        self.assertEqual(front.back2.read_settings()["theme_effect"], "liquid_glass_half")
+        self.assertEqual(front.web_store._settings["theme_effect"], "liquid_glass_half")
 
-    def test_local_desktop_replaces_saved_half_glass_on_restart(self):
+    def test_local_desktop_keeps_saved_half_glass_on_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             back = Backend2.__new__(Backend2)
             back.web, back.phone = False, False
@@ -132,9 +135,9 @@ class ThemeEffectTests(unittest.TestCase):
             back._settings_write({"theme_style": "nord", "theme_effect": "liquid_glass_half"})
             for _ in range(2):
                 back.set_default_settings()
-                self.assertEqual(back._settings_read()["theme_effect"], "liquid_glass")
+                self.assertEqual(back._settings_read()["theme_effect"], "liquid_glass_half")
                 self.assertEqual(back.read_settings()["theme_style"], "nord")
-                self.assertEqual(back.read_settings()["theme_effect"], "liquid_glass")
+                self.assertEqual(back.read_settings()["theme_effect"], "liquid_glass_half")
 
     def test_phone_replaces_saved_full_glass_and_cannot_reenable_it(self):
         for style, effect in (("liquid_glass", None), ("nord", "liquid_glass")):
@@ -159,7 +162,7 @@ class ThemeEffectTests(unittest.TestCase):
             back.redact_setting("theme_effect", "liquid_glass")
             self.assertEqual(back._settings_read()["theme_effect"], "liquid_glass_half")
 
-    def test_half_glass_keeps_custom_colors_and_material_theme_unchanged(self):
+    def test_half_glass_keeps_custom_colors_and_uses_lightweight_widget_themes(self):
         for style, _ in THEME_STYLE_OPTIONS:
             for brightness in (ft.Brightness.LIGHT, ft.Brightness.DARK):
                 with self.subTest(style=style, brightness=brightness):
@@ -170,9 +173,14 @@ class ThemeEffectTests(unittest.TestCase):
                         for key, value in get_theme_colors(base, accent).items():
                             self.assertEqual(colors[key], value)
                         half, regular = build_flet_theme(theme, accent), build_flet_theme(base, accent)
-                        for name in ("color_scheme", "button_theme", "switch_theme", "dialog_theme",
-                                     "dropdown_theme", "checkbox_theme", "tooltip_theme"):
-                            self.assertEqual(getattr(half, name), getattr(regular, name))
+                        self.assertEqual(half.color_scheme, regular.color_scheme)
+                        self.assertEqual(half.button_theme.style.elevation, 0)
+                        self.assertEqual(half.dialog_theme.elevation, 0)
+                        self.assertEqual(half.popup_menu_theme.elevation, 0)
+                        self.assertEqual(half.dropdown_theme.menu_style.elevation, 0)
+                        self.assertIsNotNone(half.checkbox_theme)
+                        self.assertIsNotNone(half.switch_theme)
+                        self.assertIsNone(half.tooltip_theme.decoration.gradient)
 
     def test_glass_supports_every_named_accent_as_well_as_custom_hex(self):
         for style, _ in THEME_STYLE_OPTIONS:

@@ -54,7 +54,7 @@ class Backend:
         self.web = web_store is not None
         self.Save_in_time = ""
         self.phone = False
-        self.version = '3.13.1'
+        self.version = '3.14.0'
         if self.web:
             self.store = web_store
             self.cloud = cloud or Cloud(web_store=web_store)

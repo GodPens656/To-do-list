@@ -108,7 +108,7 @@ class Fr_Libs:
         return scaled_text_size(self.page, size)
 
     def host(self, **kwargs):
-        if self.glass:
+        if self.glass or self.glass_toolbar:
             return GlassHost(self.theme, self.colors, mobile=self.glass_mobile, **kwargs)
         return ft.Container(**kwargs)
 
@@ -429,16 +429,17 @@ class Fr_Libs:
             width=target_size,
             height=target_size,
             bgcolor=self.BtnColor,
-            tooltip=ft.Tooltip(tooltip),
+            tooltip=ft.Tooltip(tooltip, decoration=None),
         )
 
-    def style_glass_toolbar(self, container, row):
+    def style_glass_toolbar(self, container, row, *, labels=None):
         """Одна стеклянная капсула с равными по ширине действиями."""
         container.content.tight = True
         row.scroll = None
         row.wrap = False
         row.spacing = 2
-        for button, label in zip(row.controls, ("Настройки", "Аккаунт", "Отмена", "Обновить")):
+        labels = labels or ("Настройки", "Аккаунт", "Отмена", "Обновить")
+        for button, label in zip(row.controls, labels):
             button._nd_glass_toolbar_action = True
             icon = button.content
             if isinstance(icon, ft.Icon):
@@ -471,6 +472,50 @@ class Fr_Libs:
                 visual_density=ft.VisualDensity.COMPACT,
             )
         self.style_glass_toolbar_surface(container)
+
+    def configure_action_panel(self, container, actions, position, *, progress=None):
+        """Keep every action reachable, including in a short vertical sidebar."""
+        if position in {"left", "right"}:
+            button_width = 64
+            for control in actions.controls:
+                control.expand = None
+                if isinstance(control, ft.TextField):
+                    control.width = None
+                elif isinstance(control, (ft.Button, ft.TextButton, ft.IconButton)):
+                    # Keep the same button dimensions and style as horizontal panels.
+                    button_width = max(button_width, control.width or 0)
+            listing = ft.Column(
+                list(actions.controls), scroll=ft.ScrollMode.AUTO,
+                spacing=8, expand=True,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+            container.content = ft.Column(
+                [listing, *([progress] if progress is not None else [])],
+                spacing=0, horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            )
+            # Leave room for the capsule's rounded ends outside the scroll area.
+            container.padding = (ft.Padding.symmetric(horizontal=6, vertical=20)
+                                 if getattr(container, "_nd_glass_toolbar", False) else 6)
+            container.width = button_width + 12
+        else:
+            glass_actions = self.phone and actions.controls and all(
+                getattr(control, "_nd_glass_toolbar_action", False) for control in actions.controls)
+            for control in actions.controls:
+                control.expand = True if glass_actions else None
+            actions.wrap = not self.phone
+            actions.scroll = ft.ScrollMode.AUTO if self.phone and not glass_actions else None
+            container.content = (ft.Column([actions, progress], spacing=0)
+                                 if progress is not None else actions)
+        return container
+
+    def dock_action_panel(self, body, panel, position):
+        """Give the body bounded space beside a fixed, independently scrolling panel."""
+        controls = [panel, body] if position in {"top", "left"} else [body, panel]
+        if position in {"left", "right"}:
+            return ft.Row(controls, expand=True, spacing=10,
+                          vertical_alignment=ft.CrossAxisAlignment.STRETCH)
+        return ft.Column(controls, expand=True, spacing=10,
+                         horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
     def style_glass_toolbar_surface(self, container):
         """Style only the panel, keeping the rest of the screen's material."""

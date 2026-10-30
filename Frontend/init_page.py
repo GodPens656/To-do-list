@@ -57,6 +57,8 @@ class Front(NotesMixin):
         self._app_locked = customization_settings["password_enabled"]
         self.theme_style = customization_settings["theme_style"]
         self.theme_effect = customization_settings["theme_effect"]
+        self.action_panel_position = customization_settings["action_panel_position"]
+        self.group_panel_position = customization_settings["group_panel_position"]
         self.icon_pack = customization_settings["icon_pack"]
         self.button_bg_mode = customization_settings["button_bg_mode"]
         self.button_custom_color = customization_settings["button_custom_color"]
@@ -97,6 +99,7 @@ class Front(NotesMixin):
             on_button_color_change=self.apply_button_color,
             on_font_change=self.apply_font_settings,
             on_effect_change=self.apply_theme_effect,
+            on_layout_change=self.apply_layout_settings,
             icon_pack=self.icon_pack,
             button_color=self.button_color,
         )
@@ -289,6 +292,8 @@ class Front(NotesMixin):
         self.theme_style = theme_style
         customization_settings = self.back2.read_settings()
         self.theme_effect = customization_settings["theme_effect"]
+        self.action_panel_position = customization_settings["action_panel_position"]
+        self.group_panel_position = customization_settings["group_panel_position"]
         self.icon_pack = customization_settings["icon_pack"]
         self.button_bg_mode = customization_settings["button_bg_mode"]
         self.button_custom_color = customization_settings["button_custom_color"]
@@ -327,6 +332,7 @@ class Front(NotesMixin):
             on_button_color_change=self.apply_button_color,
             on_font_change=self.apply_font_settings,
             on_effect_change=self.apply_theme_effect,
+            on_layout_change=self.apply_layout_settings,
             icon_pack=self.icon_pack,
             button_color=self.button_color,
         )
@@ -392,6 +398,10 @@ class Front(NotesMixin):
         """Apply the material immediately and keep customization open."""
         self._refresh_customization()
 
+    def apply_layout_settings(self):
+        """Rebuild both panels and keep the current group and customization open."""
+        self._refresh_customization()
+
     def _refresh_customization(self):
         group_id = self.current_group_id
         self.apply_theme_style(self.theme_style)
@@ -408,8 +418,9 @@ class Front(NotesMixin):
 
     def add_main_widgets(self):
         """Добавляет созданные в ``Frontend.main`` виджеты на главную страницу."""
-        if self.phone:
-            if self.libs.glass_mobile and self.libs.glass:
+        floating = self.phone and self.libs.glass_mobile and self.action_panel_position == "bottom"
+        if floating:
+            if self.libs.glass:
                 self.libs.style_glass_add_button(self.button_add_task, large=True)
         else:
             self.add_input(self.button_add_task)
@@ -417,40 +428,51 @@ class Front(NotesMixin):
         self.add_input(self.auth_btn)
         self.add_input(self.undo_btn)
         self.add_input(self.upd_btn)
-        if self.phone:
-            buttons_row = self.btns_cont.content
-            self.btns_cont.content = ft.Column(
-                controls=[buttons_row, self.upload_progress_cont],
-                spacing=0,
-            )
-            if self.libs.glass_mobile:
-                self.libs.style_glass_toolbar(self.btns_cont, buttons_row)
-                controls = self.main_cont.content.controls
-                start = controls.index(self.tasks_cont)
-                end = controls.index(self.btns_cont) + 1
-                controls[start:end] = [self.libs.build_glass_body(
-                    self.tasks_cont, self.button_add_task, self.btns_cont,
-                )]
+        search_row = None
+        if not self.phone:
+            if self.action_panel_position in {"left", "right"}:
+                self.search_field.width = None
+                self.search_field.expand = True
+                search_row = ft.Row([
+                    self.search_btn, self.search_field, self.search_close_btn, self.filter_btn,
+                ], spacing=5)
             else:
-                # Кнопка лежит поверх фона списка, а отступ прокручивается
-                # вместе с делами и позволяет поднять последнее выше кнопки.
-                self.tasks_cont.expand = None
-                self.tasks_cont.left = self.tasks_cont.top = 0
-                self.tasks_cont.right = self.tasks_cont.bottom = 0
-                self.tasks_cont.content.padding = ft.Padding.only(bottom=100)
-                controls = self.main_cont.content.controls
-                controls[controls.index(self.tasks_cont)] = ft.Stack([
-                    self.tasks_cont,
-                    ft.Container(content=self.button_add_task, right=18, bottom=18),
-                ], fit=ft.StackFit.EXPAND, expand=True)
-        else:
-            self.add_input(self.search_btn)
-            self.add_input(self.search_field)
-            self.add_input(self.search_close_btn)
-            self.add_input(self.filter_btn)
+                self.add_input(self.search_btn)
+                self.add_input(self.search_field)
+                self.add_input(self.search_close_btn)
+                self.add_input(self.filter_btn)
             self.add_input(self.upload_progress)
-            if self.libs.glass_toolbar:
-                self.libs.style_glass_toolbar_surface(self.btns_cont)
+        actions = self.btns_cont.content
+        progress = self.upload_progress_cont if self.phone else None
+        if self.phone and self.libs.glass_mobile:
+            self.btns_cont.content = ft.Column([actions, progress], spacing=0)
+            labels = ["Настройки", "Аккаунт", "Отмена", "Обновить"]
+            if not floating:
+                labels.insert(0, "Добавить")
+            self.libs.style_glass_toolbar(self.btns_cont, actions, labels=labels)
+        elif self.libs.glass_toolbar:
+            self.libs.style_glass_toolbar_surface(self.btns_cont)
+
+        if floating:
+            body = ft.Column([
+                self.task_overview,
+                self.libs.build_glass_body(self.tasks_cont, self.button_add_task, self.btns_cont),
+            ], expand=True, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        else:
+            self.libs.configure_action_panel(
+                self.btns_cont, actions, self.action_panel_position, progress=progress)
+            body = self.libs.dock_action_panel(
+                ft.Column([self.task_overview, *([search_row] if search_row is not None else []),
+                           self.tasks_cont], expand=True,
+                          horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+                self.btns_cont, self.action_panel_position,
+            )
+        controls = ([self.group_tabs, body] if self.group_panel_position == "top"
+                    else [body, self.group_tabs])
+        self.main_cont.content = ft.Column(
+            [*controls, self.border], spacing=10,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
 
     def _refresh_undo_buttons(self):
         disabled = not self.back.can_undo()
@@ -2323,17 +2345,6 @@ class Front(NotesMixin):
 
     def _build_groups_body(self, header, groups_column):
         actions = self._build_group_actions()
-        if not self.libs.glass_mobile:
-            if self.libs.glass_toolbar:
-                actions = ft.Container(content=actions)
-                self.libs.style_glass_toolbar_surface(actions)
-            main = self.libs.create_style_cont([
-                actions, self.groups_progress_cont, groups_column,
-            ])
-            main.content.scroll = None
-            return self.libs.collection_widgets_fo_dialog(header, main, self.border)
-
-        # Список прокручивается отдельно: капсула всегда остаётся у нижнего края.
         header.width = None
         groups_column.expand = True
         main = self.libs.create_style_cont([groups_column])
@@ -2341,26 +2352,46 @@ class Front(NotesMixin):
         main.content.scroll = None
         self.groups_btns_cont = ft.Container(content=ft.Column([
             actions, self.groups_progress_cont,
-        ], spacing=0))
-        self.libs.style_glass_toolbar(self.groups_btns_cont, actions)
-        # Как в collection_widgets_fo_dialog: мобильный spacer и spacing
-        # перед заголовком нативного экрана; в веб-версии отступа нет.
+        ], spacing=0), bgcolor=self.libs.ContBgColor,
+            border=ft.Border.all(1, self.libs.colors["SoftBorderColor"]),
+            border_radius=16, padding=6)
+        floating = self.phone and self.libs.glass_mobile and self.action_panel_position == "bottom"
+        if self.phone and self.libs.glass_mobile:
+            labels = ["Назад", "Отмена"] if floating else ["Назад", "Добавить", "Отмена"]
+            self.libs.style_glass_toolbar(self.groups_btns_cont, actions, labels=labels)
+        elif self.libs.glass_toolbar:
+            self.libs.style_glass_toolbar_surface(self.groups_btns_cont)
+        if floating:
+            body = self.libs.build_glass_body(
+                main, self.groups_add_btn, self.groups_btns_cont, scrollable=groups_column)
+        else:
+            self.libs.configure_action_panel(
+                self.groups_btns_cont, actions, self.action_panel_position,
+                progress=self.groups_progress_cont)
+            # The outer panel receives a bounded height from this screen.
+            # Its ListView fills only the space left by the action panel.
+            main.content = self.libs.dock_action_panel(
+                self.libs.host(content=groups_column, expand=True),
+                self.groups_btns_cont, self.action_panel_position)
+            body = main
         top_padding = 0 if self.web else self.libs.height_for_dlg_spacer + 10
-        return self.libs.host(content=ft.Column([
+        frame = self.libs.host(content=ft.Column([
             header,
-            self.libs.build_glass_body(main, self.groups_add_btn, self.groups_btns_cont,
-                                       scrollable=groups_column),
+            body,
             ft.Container(height=20, visible=self.border.visible),
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+            width=None if self.phone else self.libs.width_dialogs,
             padding=ft.Padding.only(top=top_padding), expand=True)
+        return self.libs.host(content=frame, alignment=ft.Alignment.TOP_CENTER, expand=True)
 
     def _build_group_actions(self):
         create = self.libs.create_style_button("Новая группа", ft.Icons.ADD_ROUNDED)
         # В прокручиваемой строке кнопка должна занимать свою ширину:
         # Expanded несовместим с неограниченной шириной содержимого.
-        create.expand = None if self.phone else True
+        create.expand = None
         create.on_click = self._open_create_group
-        if self.libs.glass_mobile:
+        floating = self.phone and self.libs.glass_mobile and self.action_panel_position == "bottom"
+        if self.libs.glass_mobile or self.action_panel_position in {"left", "right"}:
             create = self.libs.build_button_with_image("plusS", "Новая группа", compact=False)
             create.on_click = self._open_create_group
             create.width = create.height = 56
@@ -2369,7 +2400,7 @@ class Front(NotesMixin):
             self.groups_add_btn = create
         back = self.libs.build_button_with_image("nazad", "Назад к делам", compact=False)
         back.on_click = self.close_page
-        controls = [back] if self.libs.glass_mobile else [back, create]
+        controls = [back] if floating else [back, create]
         for icon, label, handler in (
             ("undo", "Отменить последнее действие", self.undo_last_action),
         ):

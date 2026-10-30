@@ -24,9 +24,8 @@ THEME_EFFECTS = {key for key, _ in THEME_EFFECT_OPTIONS}
 
 
 def theme_effect_options(phone=False):
-    effect = "liquid_glass_half" if phone else "liquid_glass"
     return tuple(option for option in THEME_EFFECT_OPTIONS
-                 if option[0] in {"none", effect})
+                 if not phone or option[0] != "liquid_glass")
 
 
 THEME_COLORS = {
@@ -412,8 +411,6 @@ def normalize_theme_effect(value, *, phone=None):
     effect = value if value in THEME_EFFECTS else "none"
     if phone is True and effect == "liquid_glass":
         return "liquid_glass_half"
-    if phone is False and effect == "liquid_glass_half":
-        return "liquid_glass"
     return effect
 
 

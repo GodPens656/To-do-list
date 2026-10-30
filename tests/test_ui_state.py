@@ -9,7 +9,7 @@ from Backend.webstorage import WebSessionStore
 from Frontend.init_page import Front
 
 
-def make_front(theme="chatgpt", dark=False, phone=False, page=None, effect=None):
+def make_front(theme="chatgpt", dark=False, phone=False, page=None, effect=None, settings=None):
     """Build an existing personal group with isolated data and no cloud workers."""
     if page is None:
         page = Mock(
@@ -21,6 +21,7 @@ def make_front(theme="chatgpt", dark=False, phone=False, page=None, effect=None)
     store = WebSessionStore(page)
     store._data["groups"][0]["name"] = "Личные дела"
     store._settings = {"theme_style": theme}
+    store._settings.update(settings or {})
     if effect is not None:
         store._settings["theme_effect"] = effect
     with ExitStack() as stack:

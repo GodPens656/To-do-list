@@ -204,8 +204,11 @@ class MobileGlassTests(unittest.TestCase):
         self.assertEqual([c for c in surfaces if c.blur is not None], [toolbar])
         self.assertEqual([c for c in surfaces if c.gradient is not None], [toolbar])
         self.assertFalse(any(c.shadow is not None for c in surfaces))
-        self.assertFalse(any(c.foreground_decoration is not None for c in surfaces))
-        self.assertFalse(any(getattr(c, "_nd_glass_styled", None) for c in controls))
+        highlights = [c for c in surfaces if c.foreground_decoration is not None]
+        self.assertTrue(highlights)
+        self.assertNotIn(toolbar, highlights)
+        self.assertTrue(all(len(c.foreground_decoration.gradient.colors) == 2 for c in highlights))
+        self.assertFalse(any(getattr(c, "_nd_glass_skin", None) for c in controls))
 
     def assert_overlay(self, screen, list_container, scrollable, toolbar):
         stack = next(c for c in self.walk(screen) if isinstance(c, ft.Stack))
@@ -249,7 +252,7 @@ class MobileGlassTests(unittest.TestCase):
                 self.assert_overlay(screen, stack.controls[0], front._groups_column,
                                     front.groups_btns_cont)
 
-    def test_half_glass_leaves_later_controls_and_their_state_unchanged(self):
+    def test_half_glass_styles_later_controls_without_wrappers_or_filters(self):
         theme = resolve_theme("chatgpt", ft.Brightness.LIGHT, "liquid_glass_half")
         colors = get_theme_colors(theme)
         column = ft.Column([])
@@ -257,17 +260,33 @@ class MobileGlassTests(unittest.TestCase):
         host.before_update()
         button = ft.Button("Удалить", bgcolor="#C62828", disabled=True)
         badge = ft.Container(ft.Text("Важно"), bgcolor="#30E0A020", border_radius=6)
-        column.controls.extend([button, badge])
+        field = ft.TextField(value="Текст", visible=False)
+        dropdown = ft.Dropdown(value="none", options=[ft.dropdown.Option("none", "Нет")])
+        column.controls.extend([button, badge, field, dropdown])
+        original_controls = self.walk(host)
         host.before_update()
         self.assertEqual(button.content, "Удалить")
         self.assertEqual(button.bgcolor, "#C62828")
         self.assertEqual(badge.bgcolor, "#30E0A020")
         self.assertTrue(button.disabled)
+        self.assertIsNotNone(button.style.side)
+        self.assertIsNotNone(badge.foreground_decoration)
+        self.assertEqual(field.value, "Текст")
+        self.assertFalse(field.visible)
+        self.assertTrue(field.filled)
+        self.assertTrue(dropdown.filled)
+        self.assertEqual(dropdown.value, "none")
+        self.assertEqual(dropdown.menu_style.elevation, 0)
+        decoration, style = badge.foreground_decoration, button.style
         button.disabled = False
+        badge.bgcolor = "#30C62828"
         host.before_update()
         self.assertEqual(button.content, "Удалить")
         self.assertFalse(button.disabled)
-        self.assertFalse(any(getattr(c, "_nd_glass_styled", None) for c in self.walk(host)))
+        self.assertEqual(badge.bgcolor, "#30C62828")
+        self.assertIs(badge.foreground_decoration, decoration)
+        self.assertIs(button.style, style)
+        self.assertEqual([id(c) for c in self.walk(host)], [id(c) for c in original_controls])
         self.assertTrue(all(c.blur is None and c.shadow is None
                             for c in self.walk(host) if isinstance(c, ft.Container)))
 

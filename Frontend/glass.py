@@ -112,7 +112,38 @@ def glass_surface(container, theme, *, radius=None, compact=False, tint=None,
     return container
 
 
+def _light_glass_colors(colors):
+    """Nearly opaque widget fills; the toolbar keeps its original material."""
+    return {
+        **colors,
+        "GlassEdgeColor": colors["SoftBorderColor"],
+        "GlassInputColor": mix_color(colors["ContBgColor"], "#FFFFFF", 0.025),
+        "GlassPopupColor": mix_color(colors["ContBgColor"], colors["BgColor"], 0.08),
+        "GlassHoverColor": colors["HoverColor"],
+        "GlassPressedColor": ft.Colors.with_opacity(0.12, colors["ProgressColor"]),
+    }
+
+
+def _light_glass_surface(container, theme):
+    """Paint a faint reflection without filters or extra controls."""
+    if (container.bgcolor in (None, ft.Colors.TRANSPARENT)
+            or not (container.border_radius or container.border)
+            or container.foreground_decoration is not None):
+        return
+    # Foreground paint preserves alpha and semantic colors of badges, previews
+    # and warning panels, including later changes to their background/border.
+    container.foreground_decoration = ft.BoxDecoration(
+        border_radius=container.border_radius,
+        border=ft.Border.all(0.5, "#14FFFFFF" if str(theme).endswith("dark") else "#28FFFFFF"),
+        gradient=ft.LinearGradient(
+            begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT,
+            colors=["#0AFFFFFF", "#00FFFFFF"],
+        ),
+    )
+
+
 def glass_button_style(theme, colors, style=None, *, material=False):
+    lightweight = is_toolbar_glass(theme)
     style = style or ft.ButtonStyle()
     style.bgcolor = {
         ft.ControlState.DEFAULT: ft.Colors.TRANSPARENT if material else colors["BtnColor"],
@@ -121,10 +152,10 @@ def glass_button_style(theme, colors, style=None, *, material=False):
         ft.ControlState.PRESSED: colors["GlassPressedColor"],
         ft.ControlState.DISABLED: colors["GlassDisabledColor"],
     }
-    style.side = ft.BorderSide(0 if material else 1,
+    style.side = ft.BorderSide(0 if material else (0.5 if lightweight else 1),
                                ft.Colors.TRANSPARENT if material else colors["GlassEdgeColor"])
-    style.shadow_color = "#22081832"
-    style.elevation = {ft.ControlState.DEFAULT: 0, ft.ControlState.HOVERED: 2}
+    style.shadow_color = ft.Colors.TRANSPARENT if lightweight else "#22081832"
+    style.elevation = 0 if lightweight else {ft.ControlState.DEFAULT: 0, ft.ControlState.HOVERED: 2}
     style.overlay_color = colors["HoverColor"]
     style.shape = style.shape or ft.RoundedRectangleBorder(radius=14)
     return style
@@ -215,8 +246,11 @@ def apply_glass(control, theme, colors, *, mobile=False):
     GlassHost calls this at Flet's update boundary, so newly created task cards,
     attachment buttons and expanded settings receive the same material.
     """
-    if not is_glass(theme) or is_toolbar_glass(theme):
+    if not is_glass(theme):
         return control
+    lightweight = is_toolbar_glass(theme)
+    if lightweight:
+        colors = _light_glass_colors(colors)
     seen = set()
     surface_colors = {colors[key] for key in (
         "BgColor", "ContBgColor", "BtnColor", "LoadColor", "WarnBgColor",
@@ -234,6 +268,8 @@ def apply_glass(control, theme, colors, *, mobile=False):
                 if (getattr(item, "_nd_glass_material", False)
                         or getattr(item, "_nd_glass_toolbar", False)):
                     pass
+                elif lightweight:
+                    _light_glass_surface(item, theme)
                 elif item.bgcolor in surface_colors:
                     # Unadorned layout containers must remain transparent;
                     # otherwise several large panes hide the backdrop entirely.
@@ -277,7 +313,9 @@ def apply_glass(control, theme, colors, *, mobile=False):
                 item.shape = ft.RoundedRectangleBorder(
                     radius=18, side=ft.BorderSide(1, colors["GlassEdgeColor"]),
                 )
-                item.shadow_color = "#33081832"
+                item.shadow_color = ft.Colors.TRANSPARENT if lightweight else "#33081832"
+                if lightweight:
+                    item.elevation = 0
             elif isinstance(item, ft.AlertDialog):
                 item.bgcolor = colors["GlassPopupColor"]
                 item.shape = ft.RoundedRectangleBorder(
@@ -285,6 +323,17 @@ def apply_glass(control, theme, colors, *, mobile=False):
                 )
                 item.clip_behavior = ft.ClipBehavior.ANTI_ALIAS
                 item.barrier_color = colors["AlertOverlayColor"]
+                if lightweight:
+                    item.elevation = 0
+            elif lightweight and isinstance(item, (ft.Button, ft.TextButton, ft.IconButton)):
+                if not getattr(item, "_nd_glass_toolbar_action", False):
+                    # Keep labels, icons, padding, dimensions and semantic
+                    # button colors intact; no material wrapper is needed.
+                    style = item.style or ft.ButtonStyle()
+                    if style.side is None:
+                        style.side = ft.BorderSide(0.5, colors["GlassEdgeColor"])
+                    style.overlay_color = colors["HoverColor"]
+                    item.style = style
             elif isinstance(item, (ft.Checkbox, ft.Switch)):
                 item.adaptive = False
             elif isinstance(item, ft.ProgressBar):
@@ -294,11 +343,11 @@ def apply_glass(control, theme, colors, *, mobile=False):
                 item.color = colors["GlassEdgeColor"]
             object.__setattr__(item, "_nd_glass_styled", (theme, mobile))
 
-        if isinstance(item, (ft.Button, ft.TextButton, ft.IconButton)):
+        if not lightweight and isinstance(item, (ft.Button, ft.TextButton, ft.IconButton)):
             if not getattr(item, "_nd_glass_toolbar_action", False):
                 _button_material(item, theme, colors, mobile=mobile)
 
-        if isinstance(item, ft.Container) and item.blur is not None:
+        if not lightweight and isinstance(item, ft.Container) and item.blur is not None:
             if in_backdrop:
                 # A panel can have been prepared before being attached to an
                 # already filtered parent. Avoid nested filters in that case.
@@ -322,7 +371,8 @@ def glass_menu_style(theme, colors):
         bgcolor=colors["GlassPopupColor"],
         side=ft.BorderSide(1, colors["GlassEdgeColor"]),
         shape=ft.RoundedRectangleBorder(radius=18),
-        shadow_color="#33081832", elevation=8,
+        shadow_color=ft.Colors.TRANSPARENT if is_toolbar_glass(theme) else "#33081832",
+        elevation=0 if is_toolbar_glass(theme) else 8,
     )
 
 
@@ -343,9 +393,13 @@ class GlassHost(ft.Container):
 
 def configure_glass_theme(result, theme, colors):
     """Material popups and small controls use the same translucent palette."""
-    if not is_glass(theme) or is_toolbar_glass(theme):
+    if not is_glass(theme):
         return result
-    edge = ft.BorderSide(1, colors["GlassEdgeColor"])
+    lightweight = is_toolbar_glass(theme)
+    if lightweight:
+        colors = _light_glass_colors(colors)
+    shadow = ft.Colors.TRANSPARENT if lightweight else "#33081832"
+    edge = ft.BorderSide(0.5 if lightweight else 1, colors["GlassEdgeColor"])
     shape = ft.RoundedRectangleBorder(radius=22, side=edge)
     style = glass_button_style(theme, colors)
     result.button_theme = ft.ButtonTheme(style=style)
@@ -356,12 +410,12 @@ def configure_glass_theme(result, theme, colors):
     result.dropdown_theme.menu_style = glass_menu_style(theme, colors)
     result.popup_menu_theme = ft.PopupMenuTheme(
         color=colors["GlassPopupColor"], shape=shape,
-        shadow_color="#33081832", elevation=8,
+        shadow_color=shadow, elevation=0 if lightweight else 8,
     )
     result.dialog_theme = ft.DialogTheme(
         bgcolor=colors["GlassPopupColor"], shape=shape,
         barrier_color=colors["AlertOverlayColor"],
-        shadow_color="#33081832", elevation=12,
+        shadow_color=shadow, elevation=0 if lightweight else 12,
     )
     result.date_picker_theme = ft.DatePickerTheme(
         bgcolor=colors["GlassPopupColor"], shape=shape,
@@ -393,11 +447,10 @@ def configure_glass_theme(result, theme, colors):
     )
     result.tooltip_theme = ft.TooltipTheme(
         decoration=ft.BoxDecoration(
-            bgcolor=colors["GlassPopupColor"],
-            gradient=glass_gradient(theme, compact=True),
-            border=glass_border(theme), border_radius=12,
+            bgcolor="#F2F4F7",
+            border=ft.Border.all(0.5, "#CCD3DD"), border_radius=8,
         ),
-        text_style=ft.TextStyle(color=colors["TxtColor"]),
+        text_style=ft.TextStyle(color="#202734"),
         padding=ft.Padding.symmetric(horizontal=12, vertical=8),
     )
     result.slider_theme = ft.SliderTheme(

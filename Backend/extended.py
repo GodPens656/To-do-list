@@ -30,6 +30,7 @@ from Frontend.theme import (
     normalize_theme_style,
 )
 from Frontend.typography import normalize_font_family, normalize_font_size
+from Frontend.layout import normalize_action_panel_position, normalize_group_panel_position
 
 class Backend2:
     CUSTOM_ICON_NAMES = (
@@ -332,6 +333,8 @@ class Backend2:
             "special_tasks_separate_dialogs": "False",
             "theme_style": "chatgpt",
             "theme_effect": "none",
+            "action_panel_position": normalize_action_panel_position(None, phone=getattr(self, "phone", False)),
+            "group_panel_position": "top",
             "font_family": "default",
             "font_size": "medium",
             "icon_pack": "minimalistic",
@@ -361,6 +364,14 @@ class Backend2:
         if effect != settings["theme_effect"]:
             settings["theme_effect"] = effect
             changed = True
+        for key, value in (
+            ("action_panel_position", normalize_action_panel_position(
+                settings["action_panel_position"], phone=getattr(self, "phone", False))),
+            ("group_panel_position", normalize_group_panel_position(settings["group_panel_position"])),
+        ):
+            if settings[key] != value:
+                settings[key] = value
+                changed = True
         if changed:
             self._settings_write(settings)
 
@@ -387,6 +398,8 @@ class Backend2:
             "special_tasks_separate_dialogs",
             "theme_style",
             "theme_effect",
+            "action_panel_position",
+            "group_panel_position",
             "font_family",
             "font_size",
             "icon_pack",
@@ -536,6 +549,10 @@ class Backend2:
             'theme_effect': normalize_theme_effect(
                 settings.get("theme_effect"), phone=getattr(self, "phone", False)
             ),
+            'action_panel_position': normalize_action_panel_position(
+                settings.get("action_panel_position"), phone=getattr(self, "phone", False)
+            ),
+            'group_panel_position': normalize_group_panel_position(settings.get("group_panel_position")),
             'icon_pack': (
                 settings.get("icon_pack", "minimalistic")
                 if (
@@ -620,6 +637,10 @@ class Backend2:
             status = normalize_theme_style(status)
         elif setting == "theme_effect":
             status = normalize_theme_effect(status, phone=getattr(self, "phone", False))
+        elif setting == "action_panel_position":
+            status = normalize_action_panel_position(status, phone=getattr(self, "phone", False))
+        elif setting == "group_panel_position":
+            status = normalize_group_panel_position(status)
         elif setting == "font_family":
             status = normalize_font_family(status)
         elif setting == "font_size":

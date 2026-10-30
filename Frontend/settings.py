@@ -15,6 +15,7 @@ from .theme import (
 )
 from .libs import Fr_Libs
 from .typography import FONT_FAMILY_OPTIONS, FONT_SIZE_OPTIONS
+from .layout import ACTION_PANEL_OPTIONS, GROUP_PANEL_OPTIONS
 
 
 class Utils2:
@@ -31,6 +32,7 @@ class Utils2:
         button_color=None,
         on_font_change=None,
         on_effect_change=None,
+        on_layout_change=None,
     ):
         """Импорт классов и задание переменных"""
         self.cloud = cloud
@@ -42,6 +44,7 @@ class Utils2:
         self.on_button_color_change = on_button_color_change
         self.on_font_change = on_font_change
         self.on_effect_change = on_effect_change
+        self.on_layout_change = on_layout_change
         self.on_edit_repeat = None
         self.on_edit_postponed = None
 
@@ -949,6 +952,28 @@ class Utils2:
 
         effect_dropdown.on_select = change_effect
 
+        def position_selector(setting, label, options):
+            control = ft.Dropdown(
+                label=label, value=sets[setting],
+                options=[ft.dropdown.Option(key=key, text=text) for key, text in options],
+                width=self.width_dialogs * 0.82,
+            )
+
+            def change_position(_):
+                if control.value == self.back2.read_settings()[setting]:
+                    return
+                self.back2.redact_setting(setting, control.value)
+                if self.on_layout_change is not None:
+                    self.on_layout_change()
+
+            control.on_select = change_position
+            return control
+
+        action_position = position_selector(
+            "action_panel_position", "Положение панели кнопок", ACTION_PANEL_OPTIONS)
+        group_position = position_selector(
+            "group_panel_position", "Положение панели групп", GROUP_PANEL_OPTIONS)
+
         font_dropdown = ft.Dropdown(
             label="Шрифт",
             value=sets["font_family"],
@@ -1268,6 +1293,9 @@ class Utils2:
                     ft.Divider(color=self.BorderColor),
                     ft.Text("Эффект:", color=self.TxtColor),
                     effect_dropdown,
+                    ft.Divider(color=self.BorderColor),
+                    action_position,
+                    group_position,
                     ft.Divider(color=self.BorderColor),
                     icon_pack_dropdown,
                     custom_pack_help,

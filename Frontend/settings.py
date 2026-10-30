@@ -149,6 +149,9 @@ class Utils2:
         btn_schedule = self.libs.create_style_category_button(
             ft.Icons.CALENDAR_MONTH_ROUNDED, 'Расписание'
         )
+        btn_achievements = self.libs.create_style_category_button(
+            ft.Icons.EMOJI_EVENTS_ROUNDED, 'Достижения'
+        )
 
         """Главный контейнер настроек - только кнопки"""
         self.settings_cont = self.libs.create_style_cont(
@@ -161,6 +164,7 @@ class Utils2:
                     btn_security,
                     btn_notifications,
                     primechanya_btn,
+                    btn_achievements,
                     btn_nazad,
                     ft.Text(
                         f"Версия: {self.back.version}\n\n ", size=self.libs.text_size(10), color=self.TxtColor
@@ -180,6 +184,7 @@ class Utils2:
             self.build_dialog_customization()
 
         dialogs = {
+            'achievements': {'button': btn_achievements},
             'schedule': {'button': btn_schedule},
             'security': {'button': btn_security},
             'special': {

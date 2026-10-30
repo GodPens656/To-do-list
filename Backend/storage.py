@@ -1,5 +1,5 @@
-"""Хранилище дел ежедневника: раздельные JSON-файлы (tasks.json, postponed.json,
-groups.json, repeat_tasks.json) в папке сохранений.
+"""Хранилище ежедневника: раздельные JSON-файлы дел, групп, расписания
+и истории достижений в папке сохранений.
 
 Этот модуль работает только с текущей JSON-схемой и ничего не знает про
 старый itog.txt или про промежуточный JSON с ключами normal/repeat — вся
@@ -58,6 +58,7 @@ DEFAULT_DATA = {
     "groups": [{"id": "default", "name": "Без группы", "split_by_dates": True, "show_created_date": True, "show_completion_counter": True, "show_group_title": True}],
     # Дополнительное поле сохраняет правила повторения, которых нет в базовой схеме.
     "repeat_tasks": [],
+    "achievements": [],
 }
 
 
@@ -102,9 +103,8 @@ def _normalize_groups(groups):
 
 
 # --------------------------------------------------------------------------
-# Раздельное хранение: вместо одного itog.json — папка с четырьмя файлами
-# (tasks.json, postponed.json, groups.json, repeat_tasks.json). Это позволяет
-# при каждом изменении читать/писать/выгружать в облако только тот файл,
+# Раздельное хранение: вместо одного itog.json — файл на каждую секцию.
+# Это позволяет при каждом изменении читать/писать/выгружать в облако только тот файл,
 # который реально изменился, а не весь итог целиком.
 # --------------------------------------------------------------------------
 
@@ -113,6 +113,7 @@ SECTION_FILENAMES = {
     "tasks": "tasks.json",
     "postponed": "postponed.json",
     "repeat_tasks": "repeat_tasks.json",
+    "achievements": "achievements.json",
 }
 
 
@@ -139,8 +140,7 @@ def load_section(data_dir, key):
 
 
 def load_all_sections(data_dir):
-    """Читает все четыре файла секции разом и возвращает словарь
-    {"tasks": [...], "postponed": [...], "groups": [...], "repeat_tasks": [...]}."""
+    """Читает все секции разом и возвращает словарь списков записей."""
     with STORAGE_LOCK:
         return {key: load_section(data_dir, key) for key in SECTION_FILENAMES}
 
@@ -193,7 +193,7 @@ def _save_all_sections(data_dir, data, force=False):
 
 
 def ensure_split_storage(data_dir, legacy_json_path):
-    """Готовит папку раздельного хранения. Если все 4 файла уже есть — ничего
+    """Готовит папку раздельного хранения. Если все файлы уже есть — ничего
     не делает (дешёвая проверка на каждый старт приложения).
 
     Если файлов ещё нет, проверяет два источника (по порядку):
@@ -210,6 +210,19 @@ def ensure_split_storage(data_dir, legacy_json_path):
         for name in SECTION_FILENAMES.values():
             encrypt_file_if_plaintext(data_dir / name)
         return False
+
+    # An upgrade may introduce a new section. Never replace existing task
+    # files with stale legacy data just because that new file is missing.
+    if any((data_dir / name).exists() for name in SECTION_FILENAMES.values()):
+        legacy_json_path = Path(legacy_json_path)
+        source = load_data(legacy_json_path) if legacy_json_path.exists() else empty_data()
+        for key, name in SECTION_FILENAMES.items():
+            path = data_dir / name
+            if path.exists():
+                encrypt_file_if_plaintext(path)
+            else:
+                save_section(data_dir, key, source[key])
+        return True
 
     old_subfolder = data_dir / "data"
     if old_subfolder.is_dir() and any((old_subfolder / name).exists() for name in SECTION_FILENAMES.values()):

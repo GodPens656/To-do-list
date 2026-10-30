@@ -96,7 +96,7 @@ class BackupTests:
         self.cloud._check_weekly_backup()
         self.assertEqual(self.cloud.disk.mock_calls, [])
 
-    def test_copies_exactly_four_files_preserving_encrypted_bytes(self):
+    def test_copies_all_sections_preserving_encrypted_bytes(self):
         original = dict(self.disk.files)
         self.assertTrue(self.cloud.create_weekly_backup(self.today))
         target = self.backups + '/backup_19.09.2026'
@@ -105,7 +105,7 @@ class BackupTests:
         for name in SECTION_FILENAMES.values():
             self.assertEqual(self.disk.files[target + '/' + name],
                              original['/For_to-do/user_password/' + name])
-        self.assertEqual(self.disk.copy.call_count, 4)
+        self.assertEqual(self.disk.copy.call_count, len(SECTION_FILENAMES))
         for call in self.disk.copy.call_args_list:
             self.assertTrue(call.kwargs['wait'])
             self.assertFalse(call.kwargs['overwrite'])
@@ -121,14 +121,14 @@ class BackupTests:
         self.assertTrue(self.cloud.create_weekly_backup(date(2026, 9, 26)))
         for path, payload in old.items():
             self.assertEqual(self.disk.files[path], payload)
-        self.assertEqual(self.disk.copy.call_count, 8)
+        self.assertEqual(self.disk.copy.call_count, 2 * len(SECTION_FILENAMES))
 
     def test_restart_or_second_device_uses_cloud_history(self):
         self.cloud.create_weekly_backup(self.today)
         restarted = self.make_cloud()
         restarted.write_user_data_text('user_password~~user~~password')
         self.assertFalse(restarted.create_weekly_backup(date(2026, 9, 20)))
-        self.assertEqual(self.disk.copy.call_count, 4)
+        self.assertEqual(self.disk.copy.call_count, len(SECTION_FILENAMES))
 
     def test_overdue_backup_uses_actual_date_across_year_boundary(self):
         self.cloud.create_weekly_backup(date(2025, 12, 30))
@@ -237,7 +237,7 @@ class BackupTests:
         restarted = self.make_cloud()
         restarted.write_user_data_text('user_password~~user~~password')
         self.assertFalse(restarted.create_manual_backup(self.today))
-        self.assertEqual(self.disk.copy.call_count, 4)
+        self.assertEqual(self.disk.copy.call_count, len(SECTION_FILENAMES))
         self.assertTrue(restarted.create_manual_backup(date(2026, 9, 20)))
         self.assertIn(self.backups + '/backup_19.09.2026', self.disk.dirs)
         self.assertIn(self.backups + '/backup_20.09.2026', self.disk.dirs)
@@ -271,7 +271,7 @@ class BackupTests:
                 self.cloud.create_manual_backup, [self.today, self.today]
             ))
         self.assertEqual(sorted(results), [False, True])
-        self.assertEqual(self.disk.copy.call_count, 4)
+        self.assertEqual(self.disk.copy.call_count, len(SECTION_FILENAMES))
 
 
 class NativeBackupTests(BackupTests, unittest.TestCase):

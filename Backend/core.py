@@ -10,6 +10,7 @@ from .storage import load_all_sections, save_all_sections, empty_data, ensure_sp
 from .json_migration import migrate_legacy_storage
 from .validation import text_length_error
 from .attachments import validate_account_quota
+from .achievements import achievement_summary, update_completion_history
 
 
 DEFAULT_WEB_TIMEZONE = "Europe/Moscow"
@@ -97,6 +98,10 @@ class Backend:
         previous = self._load()
         if previous == data:
             return
+        if undoable:
+            update_completion_history(
+                previous, data, local_today(self.web, getattr(self, "page", None)),
+            )
         if self.is_authenticated():
             validate_account_quota(previous, data)
         if self.web:
@@ -159,6 +164,11 @@ class Backend:
 
     def get_quantity_strings(self):
         return len(self._load()["tasks"])
+
+    def get_achievements(self):
+        return achievement_summary(
+            self._load(), local_today(self.web, getattr(self, "page", None)),
+        )
 
     def read_tasks(self):
         """Возвращает обычные дела в виде списка словарей

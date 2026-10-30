@@ -449,6 +449,9 @@ class Cloud(SharedGroupsMixin):
                     if not isinstance(value, list):
                         raise ValueError("Некорректный формат секции " + key)
                     result[key] = value
+                # Older accounts have no history yet. An explicit account
+                # switch must not retain the previous account's achievements.
+                result.setdefault("achievements", [])
                 return result, False
 
         for filename in ("itog.json", "itog.txt"):
@@ -465,6 +468,7 @@ class Cloud(SharedGroupsMixin):
                     "postponed": candidate.get("postponed", []),
                     "groups": candidate.get("groups", []),
                     "repeat_tasks": candidate.get("repeat_tasks", candidate.get("repeat", [])),
+                    "achievements": candidate.get("achievements", []),
                 }
                 if not all(isinstance(value, list) for value in data.values()):
                     raise ValueError("Некорректный формат сохранения")
@@ -472,7 +476,7 @@ class Cloud(SharedGroupsMixin):
             parts = [part.strip().splitlines() for part in text.split("---")]
             while len(parts) < 4:
                 parts.append([])
-            return lines_to_data(*parts[:4]), True
+            return load_data_from_dict(lines_to_data(*parts[:4])), True
         return {}, False
 
     # ------------------------------------------------------------------

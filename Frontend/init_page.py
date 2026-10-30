@@ -1440,6 +1440,7 @@ class Front(NotesMixin):
         self.utils2.on_edit_postponed = self.open_edit_postponed_dialog
         special["button"].on_click = lambda e: self.open_special_tasks()
         dialogs["schedule"]["button"].on_click = lambda e: self.open_schedule()
+        dialogs["achievements"]["button"].on_click = lambda e: self.open_achievements()
 
         # «Управление делами» и «Общие настройки» теперь ExpansionTile:
         # их содержимое уже встроено в окно настроек, on_click не нужен.
@@ -1481,6 +1482,15 @@ class Front(NotesMixin):
                 self.modified_dialog, self.settings_cont,
                 self.utils2.only_current_group_checkbox,
             )
+
+    def open_achievements(self):
+        from .achievements import AchievementsView
+
+        self.achievements_view = AchievementsView(self)
+        self.open_modified_dialog2(
+            self.achievements_view.header, self.achievements_view.content,
+            self.achievements_view.back,
+        )
 
     def open_schedule(self):
         from .schedule import TaskSchedule

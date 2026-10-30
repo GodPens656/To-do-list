@@ -46,7 +46,8 @@ Dropbox (content_hash) каждого файла. При ошибке завер
 ## Бэкапы в приложении
 
 Для текущего авторизованного аккаунта приложение автоматически копирует
-`groups.json`, `postponed.json`, `tasks.json` и `repeat_tasks.json` из его
+`groups.json`, `postponed.json`, `tasks.json`, `repeat_tasks.json` и
+`achievements.json` (прогресс достижений) из его
 папки в Dropbox в:
 
 ```text

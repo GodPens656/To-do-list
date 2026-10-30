@@ -148,6 +148,38 @@ class RefreshProtectionTests:
         self.assertTrue(self.cloud.download('new-account'))
         self.assertEqual(self.read()['tasks'], self.remote['tasks'])
 
+    def test_achievement_history_round_trip(self):
+        data = self.read()
+        history = [{'task_id': 'finished', 'date': '2026-10-30'}]
+        data['achievements'] = history
+        self.save(data)
+        self.cloud.upload('account')
+        self.assertEqual(self.remote['achievements'], history)
+        self.remote['achievements'].append({'task_id': 'another', 'date': '2026-10-31'})
+        self.assertTrue(self.cloud.download('account', preserve_local=True))
+        self.assertEqual(self.read()['achievements'], self.remote['achievements'])
+
+    def test_login_to_older_account_clears_previous_achievement_history(self):
+        data = self.read()
+        data['achievements'] = [{'task_id': 'other-account', 'date': '2026-10-30'}]
+        self.save(data)
+        self.remote.pop('achievements')
+        self.cloud.disk.exists.side_effect = lambda path: path.rsplit('/', 1)[-1].removesuffix('.json') in self.remote
+        self.assertTrue(self.cloud.download('older-account'))
+        self.assertEqual(self.read()['achievements'], [])
+
+    def test_login_to_legacy_text_account_clears_previous_history(self):
+        data = self.read()
+        data['achievements'] = [{'task_id': 'other-account', 'date': '2026-10-30'}]
+        self.save(data)
+        self.cloud.disk.exists.side_effect = lambda path: path.endswith('/itog.txt')
+        self.cloud.disk.download.side_effect = lambda path, target: target.write(
+            encrypt_bytes('Старое дело|True|legacy|default\n---\n\n---\n\n---\nБез группы|default'.encode('utf-8'))
+        )
+        self.assertTrue(self.cloud.download('legacy-account'))
+        self.assertEqual(self.read()['achievements'], [])
+        self.assertEqual(self.read()['tasks'][0]['id'], 'legacy')
+
     def test_first_refresh_without_sync_metadata_can_load_account(self):
         self.cloud._last_synced_versions = {}
         self.assertTrue(self.cloud.download('account', preserve_local=True))

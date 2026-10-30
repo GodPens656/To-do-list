@@ -28,6 +28,7 @@ _MAGIC = b"ND-AES256-GCM\x01"
 _NONCE_SIZE = 12
 ACCOUNT_DATA_FILENAMES = frozenset({
     "tasks.json", "groups.json", "postponed.json", "repeat_tasks.json", "itog.json", "itog.txt",
+    "achievements.json",
 })
 
 

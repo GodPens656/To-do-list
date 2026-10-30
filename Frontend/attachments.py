@@ -119,8 +119,11 @@ def attachment_controls(libs, attachments, on_remove=None):
         except (OSError, ValueError, SyntaxError) as error:
             libs.open_dialog("Не удалось открыть изображение", str(error), page)
             return
+        # Native mobile clients must use the compact toolbar even when the
+        # legacy device detector hasn't recognised their storage environment.
+        phone = libs.phone or page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS)
         preview_width = min(900, max(200, (page.width or 360) - 80))
-        preview_height = max(150, min(650, (page.height or 800) - (380 if libs.phone else 220)))
+        preview_height = max(150, min(650, (page.height or 800) - (380 if phone else 220)))
         image = ft.Image(src=content, fit=ft.BoxFit.CONTAIN,
                          width=preview_width, height=preview_height)
         # Leave alignment unset: Flet 0.82 forwards it without decoding.
@@ -144,13 +147,13 @@ def attachment_controls(libs, attachments, on_remove=None):
             ft.IconButton(ft.Icons.ZOOM_OUT_ROUNDED, tooltip="Уменьшить",
                           icon_color=libs.FletIconColor, on_click=zoom_out),
             ft.TextButton("Сбросить положение", tooltip="Сбросить масштаб и положение",
-                          expand=libs.phone,
+                          expand=phone,
                           style=ft.ButtonStyle(color=libs.TxtColor), on_click=fit_image),
             ft.IconButton(ft.Icons.ZOOM_IN_ROUNDED, tooltip="Увеличить",
                           icon_color=libs.FletIconColor, on_click=zoom_in),
         ], alignment=ft.MainAxisAlignment.CENTER, spacing=4)
         zoom_hint = ft.Text(
-            "Масштаб — двумя пальцами. Фото можно перетаскивать." if libs.phone else
+            "Масштаб — двумя пальцами. Фото можно перетаскивать." if phone else
             "Масштаб — колёсиком мыши. Фото можно перетаскивать.",
             size=libs.text_size(12), color=libs.TxtColor, text_align=ft.TextAlign.CENTER,
         )
@@ -184,7 +187,7 @@ def attachment_controls(libs, attachments, on_remove=None):
                                      on_click=lambda _: page.pop_dialog())
         preview_controls = [viewer, preview_status]
         actions = [rotate_button, copy_button, download_button, close_button]
-        if libs.phone:
+        if phone:
             rotate_button.expand = copy_button.expand = True
             actions = [ft.Container(
                 content=ft.Column([
@@ -197,7 +200,7 @@ def attachment_controls(libs, attachments, on_remove=None):
             )]
         else:
             preview_controls.extend([zoom_controls, zoom_hint])
-        page.show_dialog(ft.AlertDialog(
+        page.show_dialog(libs.prepare(ft.AlertDialog(
             title=ft.Text(attachment.get("name", "Изображение"), no_wrap=False),
             content=ft.Container(
                 content=ft.Column(preview_controls, spacing=4),
@@ -205,7 +208,7 @@ def attachment_controls(libs, attachments, on_remove=None):
                 height=preview_height,
             ),
             actions=actions,
-        ))
+        )))
 
     rows = []
     for attachment in attachments or []:

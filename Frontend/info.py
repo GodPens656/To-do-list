@@ -18,13 +18,13 @@ class Utils3:
         # должны работать с тем же browser-store посетителя, что и основные
         # self.back/self.back2 во Front, а не с отдельными файлами на сервере.
         self.back = Backend(page=page, web_store=web_store)
-        self.back2 = Backend2(page=page, web_store=web_store, back=self.back)
         if page is not None and getattr(page, "web", False):
             # Телефон/ПК на сайте определяем по User-Agent — влияет только
             # на вёрстку (self.libs ниже), уведомления на сайте отключены
             # отдельно в Backend/notifications.py вне зависимости от этого флага.
             ua = (page.client_user_agent or "").lower()
             self.back.phone = any(marker in ua for marker in ("iphone", "android", "mobile"))
+        self.back2 = Backend2(page=page, web_store=web_store, back=self.back)
         self.phone = self.back.get_device()
         self.font = int()
         self.width_dialogs = int()

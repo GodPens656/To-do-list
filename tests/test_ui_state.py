@@ -9,7 +9,7 @@ from Backend.webstorage import WebSessionStore
 from Frontend.init_page import Front
 
 
-def make_front(theme="chatgpt", dark=False, phone=False, page=None):
+def make_front(theme="chatgpt", dark=False, phone=False, page=None, effect=None):
     """Build real controls with isolated in-memory data and no cloud workers."""
     if page is None:
         page = Mock(
@@ -20,6 +20,8 @@ def make_front(theme="chatgpt", dark=False, phone=False, page=None):
         )
     store = WebSessionStore(page)
     store._settings = {"theme_style": theme}
+    if effect is not None:
+        store._settings["theme_effect"] = effect
     with ExitStack() as stack:
         for target in (
             "Frontend.init_page.Cloud", "Backend.core.Cloud", "Backend.extended.Cloud",
@@ -237,7 +239,7 @@ class TaskPresentationTests(unittest.TestCase):
                 self.assertTrue(front.task_overview.visible)
 
     def test_all_palettes_and_layouts_build_with_metadata(self):
-        for theme in ("chatgpt", "improved", "improved_green", "classic", "nord", "oled"):
+        for theme in ("chatgpt", "liquid_glass", "improved", "improved_green", "classic", "nord", "oled"):
             for dark in (False, True):
                 for phone in (False, True):
                     with self.subTest(theme=theme, dark=dark, phone=phone):

@@ -59,8 +59,10 @@ class MainWidgets(Utils3):
             self.open_page(cont_H, cont_AC, self.cancel, "new-task")
 
         self.button_add_task= self.libs.build_button_with_image(
-            'plusS', 'Добавить новое дело', size=48, compact=False
+            'plusS', 'Добавить новое дело', size=56 if self.phone else 48, compact=False
         )
+        if self.phone:
+            self.button_add_task.width = self.button_add_task.height = 72
 
         self.settings = self.libs.build_button_with_image(
             'settings', 'Настройки', size=48, compact=False
@@ -312,8 +314,11 @@ class MainWidgets(Utils3):
             height=0,
         )
 
-        self.tasks_cont = ft.Container(
-            content=ft.Column([spacer], scroll=ft.ScrollMode.AUTO, spacing=8),
+        self.tasks_cont = self.libs.host(
+            content=ft.ListView(
+                [spacer], spacing=8, scroll=ft.ScrollMode.AUTO,
+                build_controls_on_demand=True, expand=True,
+            ),
             bgcolor=self.ContBgColor,
             border=ft.Border.all(1, self.colors["SoftBorderColor"]),
             border_radius=16,
@@ -345,7 +350,7 @@ class MainWidgets(Utils3):
         leading_controls = [] if self.libs.web else [ft.Container(height=5)]
 
         if self.phone:
-            self.main_cont = ft.Container(
+            self.main_cont = self.libs.host(
                 content=ft.Column(
                     controls=leading_controls + [
                         overview,
@@ -358,7 +363,7 @@ class MainWidgets(Utils3):
                 expand=True,
             )
         else:
-            self.main_cont = ft.Container(
+            self.main_cont = self.libs.host(
                 content=ft.Column(
                     controls=leading_controls + [
                         self.btns_cont,
@@ -399,7 +404,7 @@ class MainWidgets(Utils3):
         # Контейнер растягивается на всю страницу и центрирует содержимое
         # и по горизонтали, и по вертикали (раньше окно оставалось в
         # верхнем углу, т.к. не было expand=True и alignment=CENTER).
-        itog = ft.Container(
+        itog = self.libs.host(
             content=main,
             alignment=ft.Alignment.CENTER,
             expand=True,

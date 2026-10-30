@@ -1,5 +1,6 @@
 import flet as ft
 import re
+from .glass import configure_glass_theme, is_glass, is_toolbar_glass, mix_color
 
 
 THEME_STYLE_OPTIONS = (
@@ -14,6 +15,18 @@ THEME_STYLE_OPTIONS = (
     ("oled_blue", "OLED (синяя)"),
 )
 THEME_STYLES = {key for key, _ in THEME_STYLE_OPTIONS}
+THEME_EFFECT_OPTIONS = (
+    ("none", "Нет"),
+    ("liquid_glass", "Liquid glass"),
+    ("liquid_glass_half", "Liquid glass 0,5x"),
+)
+THEME_EFFECTS = {key for key, _ in THEME_EFFECT_OPTIONS}
+
+
+def theme_effect_options(phone=False):
+    effect = "liquid_glass_half" if phone else "liquid_glass"
+    return tuple(option for option in THEME_EFFECT_OPTIONS
+                 if option[0] in {"none", effect})
 
 
 THEME_COLORS = {
@@ -244,6 +257,24 @@ THEME_COLORS = {
 }
 
 THEME_COLORS.update({
+    "liquid_glass_dark": {
+        "BorderColor": "#557F9DBD", "ContBgColor": "#34425B7C",
+        "BgColor": "#142337", "TxtColor": "#F0F5FF",
+        "BtnColor": "#386A8AB8", "BtnBorderColor": "#557F9DBD",
+        "ProgressColor": "#B1D8FF", "ProgressBgColor": "#305F86AE",
+        "LoadColor": "#34425B7C", "DialogOverlayColor": "#D921334D",
+        "WarnTextColor": "#FFE0A3", "WarnBgColor": "#405D4723",
+        "WarnBorderColor": "#808D7346", "AlertOverlayColor": "#66050E21",
+    },
+    "liquid_glass_light": {
+        "BorderColor": "#99FFFFFF", "ContBgColor": "#66FFFFFF",
+        "BgColor": "#DCE8F5", "TxtColor": "#203553",
+        "BtnColor": "#75FFFFFF", "BtnBorderColor": "#BBFFFFFF",
+        "ProgressColor": "#3B69B0", "ProgressBgColor": "#406B8FBE",
+        "LoadColor": "#66FFFFFF", "DialogOverlayColor": "#E6E6EFFA",
+        "WarnTextColor": "#795012", "WarnBgColor": "#66FFF0CB",
+        "WarnBorderColor": "#99C4A165", "AlertOverlayColor": "#3D263E62",
+    },
     "oled_green_dark": {
         **THEME_COLORS["oled_dark"],
         "BtnColor": "#10251D",
@@ -332,8 +363,16 @@ def resolve_button_color(theme, mode="default", custom_color="#5659F0"):
     return None
 
 
+def _base_theme(theme):
+    base = str(theme).removeprefix("liquid_glass_half_").removeprefix("liquid_glass_")
+    return base.removeprefix("classic_")
+
+
 def get_theme_colors(theme, button_color=None):
-    colors = dict(THEME_COLORS.get(theme, THEME_COLORS["light"]))
+    base_theme = theme
+    if is_glass(theme) and theme not in THEME_COLORS:
+        base_theme = _base_theme(theme)
+    colors = dict(THEME_COLORS.get(base_theme, THEME_COLORS["light"]))
     dark = str(theme).endswith("dark")
     colors.update({
         "MutedColor": ft.Colors.with_opacity(0.68, colors["TxtColor"]),
@@ -345,6 +384,22 @@ def get_theme_colors(theme, button_color=None):
     if button_color is not None:
         colors["BtnColor"] = button_color
         colors["ProgressColor"] = button_color
+    if is_glass(theme):
+        surface = colors["ContBgColor"]
+        accent = colors["ProgressColor"]
+        colors.update({
+            "GlassEdgeColor": ft.Colors.with_opacity(0.30 if dark else 0.85, "#FFFFFF"),
+            "GlassInputColor": ft.Colors.with_opacity(0.52 if dark else 0.65, surface),
+            "GlassHoverColor": ft.Colors.with_opacity(0.20, accent),
+            "GlassPressedColor": ft.Colors.with_opacity(0.30, accent),
+            "GlassDisabledColor": ft.Colors.with_opacity(0.18, surface),
+            "GlassPopupColor": ft.Colors.with_opacity(0.96, mix_color(surface, colors["BgColor"], 0.25)),
+            "GlassButtonTint": None,
+        })
+        if button_color is not None:
+            colors["GlassButtonTint"] = ft.Colors.with_opacity(0.30, button_color)
+            if not is_toolbar_glass(theme):
+                colors["BtnColor"] = colors["GlassButtonTint"]
     return colors
 
 
@@ -353,11 +408,23 @@ def normalize_theme_style(value):
     return value if value in THEME_STYLES else "chatgpt"
 
 
-def resolve_theme(theme_style, platform_brightness):
+def normalize_theme_effect(value, *, phone=None):
+    effect = value if value in THEME_EFFECTS else "none"
+    if phone is True and effect == "liquid_glass":
+        return "liquid_glass_half"
+    if phone is False and effect == "liquid_glass_half":
+        return "liquid_glass"
+    return effect
+
+
+def resolve_theme(theme_style, platform_brightness, effect="none"):
     """Объединяет выбранный стиль с системной светлой/тёмной схемой."""
     brightness = str(platform_brightness).lower()
     brightness = "dark" if brightness.endswith("dark") else "light"
     style = normalize_theme_style(theme_style)
+    effect = normalize_theme_effect(effect)
+    if effect != "none":
+        return f"{effect}_{style}_{brightness}"
     return brightness if style == "classic" else f"{style}_{brightness}"
 
 
@@ -366,11 +433,13 @@ def build_flet_theme(theme, button_color=None):
     colors = get_theme_colors(theme, button_color)
     dark_text_primary_themes = {
         "chatgpt_dark", "chatgpt_light", "improved_dark", "improved_green_dark",
+        "liquid_glass_dark", "liquid_glass_light",
         "nord_dark", "improved_purple_dark", "oled_green_dark", "oled_blue_dark",
     }
-    on_primary = "#171717" if theme in dark_text_primary_themes else "#FFFFFF"
+    base_theme = _base_theme(theme)
+    on_primary = "#171717" if base_theme in dark_text_primary_themes else "#FFFFFF"
     switch_theme = None
-    if theme == "chatgpt_light":
+    if base_theme in {"chatgpt_light", "liquid_glass_light"}:
         switch_theme = ft.SwitchTheme(
             thumb_color={
                 ft.ControlState.SELECTED: "#FFFFFF",
@@ -385,7 +454,7 @@ def build_flet_theme(theme, button_color=None):
                 ft.ControlState.DEFAULT: "#858B9A",
             },
         )
-    return ft.Theme(
+    result = ft.Theme(
         use_material3=True,
         color_scheme=ft.ColorScheme(
             primary=colors["ProgressColor"],
@@ -406,3 +475,4 @@ def build_flet_theme(theme, button_color=None):
         ),
         switch_theme=switch_theme,
     )
+    return configure_glass_theme(result, theme, colors)

@@ -27,7 +27,7 @@ class Utils:
         # page/web_store прокинуты из Front, чтобы на сайте этот Backend2
         # писал настройки в тот же браузерный store, что и основной
         # self.back2 во Front, а не в отдельные файлы на сервере.
-        self.back2 = Backend2(page=page, web_store=web_store)
+        self.back2 = Backend2(page=page, web_store=web_store, back=back, cloud=cloud)
         self.theme = theme
 
         self.phone = self.back.get_device()
@@ -290,7 +290,7 @@ class Utils:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
-        page.show_dialog(dialog)
+        page.show_dialog(self.libs.prepare(dialog))
 
         return dialog, yes_button, cancel_button
 

@@ -1,5 +1,8 @@
 import flet as ft
 from .theme import get_theme_colors
+from .glass import (
+    GlassHost, apply_glass, glass_background, glass_surface, is_glass, is_toolbar_glass,
+)
 from .typography import scaled_text_size
 from Backend.core import Backend
 from Backend.validation import MAX_TEXT_LENGTH
@@ -50,6 +53,9 @@ class Fr_Libs:
         self.height_for_dlg_spacer = int()
 
         self.theme = theme
+        self.glass_toolbar = is_toolbar_glass(theme)
+        self.glass = is_glass(theme) and not self.glass_toolbar
+        self.glass_mobile = phone and is_glass(theme)
         self.colors = get_theme_colors(self.theme, button_color)
         self.BorderColor = self.colors["BorderColor"]
         self.ContBgColor = self.colors["ContBgColor"]
@@ -101,6 +107,21 @@ class Fr_Libs:
     def text_size(self, size):
         return scaled_text_size(self.page, size)
 
+    def host(self, **kwargs):
+        if self.glass:
+            return GlassHost(self.theme, self.colors, mobile=self.glass_mobile, **kwargs)
+        return ft.Container(**kwargs)
+
+    def prepare(self, control):
+        return apply_glass(control, self.theme, self.colors, mobile=self.glass_mobile)
+
+    def view(self, **kwargs):
+        view = ft.View(**kwargs)
+        if self.glass:
+            view.decoration = ft.BoxDecoration(gradient=glass_background(self.theme))
+            view.bgcolor = ft.Colors.TRANSPARENT
+        return view
+
     def open_dialog(self, title, content, page):
         """Открывает информационное сообщение как AlertDialog поверх текущей страницы
         (раньше это была отдельная страница/route, из-за чего лишний раз ломался
@@ -143,7 +164,7 @@ class Fr_Libs:
         if title == "Обновление":
             return close_dialog, ok
 
-        page.show_dialog(dialog)
+        page.show_dialog(self.prepare(dialog))
 
 
     REPEAT_TYPE_OPTIONS = [
@@ -287,6 +308,7 @@ class Fr_Libs:
                         f"   {warning_text}",
                         weight=ft.FontWeight.W_700,
                         color=self.colors["WarnTextColor"],
+                        expand=True,
                     )
                 ]
             ),
@@ -410,6 +432,99 @@ class Fr_Libs:
             tooltip=ft.Tooltip(tooltip),
         )
 
+    def style_glass_toolbar(self, container, row):
+        """Одна стеклянная капсула с равными по ширине действиями."""
+        container.content.tight = True
+        row.scroll = None
+        row.wrap = False
+        row.spacing = 2
+        for button, label in zip(row.controls, ("Настройки", "Аккаунт", "Отмена", "Обновить")):
+            button._nd_glass_toolbar_action = True
+            icon = button.content
+            if isinstance(icon, ft.Icon):
+                icon.size = 26
+            elif isinstance(icon, ft.Image):
+                icon.width = icon.height = 26
+            button.content = ft.Column([
+                icon,
+                ft.Text(label, size=self.text_size(11), color=self.TxtColor,
+                        max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                        text_align=ft.TextAlign.CENTER),
+            ], spacing=4, tight=True, alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+            button.expand = True
+            button.width = None
+            button.height = 62
+            button.bgcolor = ft.Colors.TRANSPARENT
+            button.elevation = 0
+            button.style = ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=32),
+                padding=ft.Padding.symmetric(horizontal=2, vertical=6),
+                elevation=0,
+                shadow_color=ft.Colors.TRANSPARENT,
+                side=ft.BorderSide(0, ft.Colors.TRANSPARENT),
+                overlay_color={
+                    ft.ControlState.DEFAULT: ft.Colors.TRANSPARENT,
+                    ft.ControlState.PRESSED: ft.Colors.with_opacity(0.16, self.TxtColor),
+                    ft.ControlState.HOVERED: self.colors["HoverColor"],
+                },
+                visual_density=ft.VisualDensity.COMPACT,
+            )
+        self.style_glass_toolbar_surface(container)
+
+    def style_glass_toolbar_surface(self, container):
+        """Style only the panel, keeping the rest of the screen's material."""
+        container.padding = 6
+        container.margin = ft.Margin.symmetric(horizontal=4)
+        container._nd_glass_toolbar = True
+        glass_surface(container, self.theme, radius=40, mobile=self.glass_mobile, backdrop=True)
+
+    def build_glass_body(self, list_container, add_button, toolbar, *, scrollable=None):
+        """Плавающие кнопки поверх списка, прокручиваемого до нижнего края."""
+        if self.glass:
+            list_container.bgcolor = None
+            list_container.gradient = None
+            list_container.border = None
+            list_container.border_radius = 0
+            list_container.blur = None
+            list_container.shadow = None
+            list_container.foreground_decoration = None
+        list_container.expand = None
+        list_container.left = list_container.top = list_container.right = list_container.bottom = 0
+        # This space belongs to the scrolling content, so cards pass behind the
+        # menu and the last item can still be scrolled clear of both buttons.
+        scrollable = scrollable if scrollable is not None else list_container.content
+        scrollable.padding = ft.Padding.only(bottom=200)
+        return self.host(
+            content=ft.Stack([
+                list_container,
+                ft.Container(
+                    content=add_button, right=18, bottom=108,
+                ),
+                ft.Container(content=toolbar, left=10, right=10, bottom=16),
+            ], fit=ft.StackFit.EXPAND),
+            expand=True,
+        )
+
+    def style_glass_add_button(self, button, *, large=False):
+        """Отдельная кнопка создания справа над стеклянной панелью."""
+        icon = button.content
+        icon_size = 42 if large else 30
+        if isinstance(icon, ft.Icon):
+            icon.size = icon_size
+        elif isinstance(icon, ft.Image):
+            icon.width = icon.height = icon_size
+        button.width = button.height = 72 if large else 56
+        button.elevation = 3
+        button.expand = None
+        button.margin = ft.Margin.only(right=8)
+        button.style = ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=24 if large else 19), padding=10,
+            elevation=3, shadow_color=ft.Colors.with_opacity(0.18, ft.Colors.BLACK),
+            side=ft.BorderSide(1, self.colors["SoftBorderColor"]),
+            overlay_color=self.colors["HoverColor"],
+        )
+
     def create_style_text_button(self, text, icon=None):
         """Создаёт textbutton со стилем, стандартным для приложения"""
         content = ft.Text(
@@ -489,7 +604,7 @@ class Fr_Libs:
             width = int(width)
 
         if height == 'auto':
-            return ft.Container(
+            return self.host(
                 content=ft.Column(content, scroll=ft.ScrollMode.AUTO, spacing=14),
                 bgcolor=self.ContBgColor,
                 border=ft.Border.all(1, self.colors["SoftBorderColor"]),
@@ -499,7 +614,7 @@ class Fr_Libs:
                 expand=True,
             )
         else:
-            return ft.Container(
+            return self.host(
                 content=ft.Column(content, scroll=ft.ScrollMode.AUTO, spacing=14),
                 bgcolor=self.ContBgColor,
                 border=ft.Border.all(1, self.colors["SoftBorderColor"]),
@@ -546,7 +661,7 @@ class Fr_Libs:
         (иконка/шрифт/ширина одинаковые), чтобы плитка выглядела
         так же, как кнопки, ведущие в диалоги, и иконка была
         видна как в свёрнутом, так и в раскрытом состоянии."""
-        return ft.ExpansionTile(
+        tile = ft.ExpansionTile(
             title=ft.Row(
                 [
                     ft.Icon(icon, color=self.FletIconColor, size=20),
@@ -585,6 +700,13 @@ class Fr_Libs:
                 radius=10,
             ),
         )
+        if self.glass:
+            return self.host(
+                content=tile, width=tile.width, bgcolor=self.ContBgColor,
+                border=ft.Border.all(1, self.colors["GlassEdgeColor"]),
+                border_radius=14,
+            )
+        return tile
 
     def create_style_section_title(self, icon, text: str, size=18, icon_color=None):
         """Заголовок раздела с иконкой перед надписью"""
@@ -664,12 +786,12 @@ class Fr_Libs:
 
         )
 
-    def collection_widgets_fo_dialog(self, cont_title, cont_actions, border):
+    def collection_widgets_fo_dialog(self, cont_title, cont_actions, border, width=None):
         """Виджеты для диалога с редактированием дела"""
         itog_cont = ft.Container(
             content=ft.Column([cont_title, cont_actions]),
             bgcolor=self.BgColor,
-            width=self.width_dialogs
+            width=self.width_dialogs if width is None else width
         )
 
         self.spacer_for_phone = ft.Container(height=self.height_for_dlg_spacer)
@@ -694,7 +816,7 @@ class Fr_Libs:
             ft.Container(height=20, visible=getattr(border, "visible", False))
         )
 
-        self.new_task_dialog = ft.Container(
+        self.new_task_dialog = self.host(
             content=ft.Column(
                 dialog_controls,
                 spacing=0 if self.web else 10,

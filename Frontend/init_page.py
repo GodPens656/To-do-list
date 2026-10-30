@@ -26,6 +26,7 @@ from .theme import (
 )
 from Backend.core import local_today
 from .typography import apply_typography
+from .glass import glass_background
 
 
 
@@ -55,10 +56,11 @@ class Front(NotesMixin):
         customization_settings = self.back2.read_settings()
         self._app_locked = customization_settings["password_enabled"]
         self.theme_style = customization_settings["theme_style"]
+        self.theme_effect = customization_settings["theme_effect"]
         self.icon_pack = customization_settings["icon_pack"]
         self.button_bg_mode = customization_settings["button_bg_mode"]
         self.button_custom_color = customization_settings["button_custom_color"]
-        self.theme = resolve_theme(self.theme_style, self.page.platform_brightness)
+        self.theme = resolve_theme(self.theme_style, self.page.platform_brightness, self.theme_effect)
         self.button_color = resolve_button_color(
             self.theme,
             self.button_bg_mode,
@@ -94,6 +96,7 @@ class Front(NotesMixin):
             on_icon_pack_change=self.apply_icon_pack,
             on_button_color_change=self.apply_button_color,
             on_font_change=self.apply_font_settings,
+            on_effect_change=self.apply_theme_effect,
             icon_pack=self.icon_pack,
             button_color=self.button_color,
         )
@@ -190,9 +193,17 @@ class Front(NotesMixin):
         """Сохраняет корневой View, к которому Flet привязывает сервисы."""
         self.root_view.route = "/"
         self.root_view.padding = self.page_edge_padding
-        self.root_view.bgcolor = self.BgColor
+        self.root_view.bgcolor = ft.Colors.TRANSPARENT if self.libs.glass else self.BgColor
+        self.root_view.decoration = (
+            ft.BoxDecoration(gradient=glass_background(self.theme))
+            if self.libs.glass else None
+        )
         if self.web:
-            self.screen_host = ft.Container(expand=True)
+            self.screen_host = self.libs.host(
+                expand=True,
+                gradient=glass_background(self.theme) if self.libs.glass else None,
+                border_radius=20 if self.libs.glass else None,
+            )
             self.root_view.controls = [self.screen_host]
         else:
             self.root_view.controls = []
@@ -277,11 +288,12 @@ class Front(NotesMixin):
         """Сразу перестраивает интерфейс, не перезапуская фоновые сервисы."""
         self.theme_style = theme_style
         customization_settings = self.back2.read_settings()
+        self.theme_effect = customization_settings["theme_effect"]
         self.icon_pack = customization_settings["icon_pack"]
         self.button_bg_mode = customization_settings["button_bg_mode"]
         self.button_custom_color = customization_settings["button_custom_color"]
         brightness = platform_brightness or self.page.platform_brightness
-        self.theme = resolve_theme(theme_style, brightness)
+        self.theme = resolve_theme(theme_style, brightness, self.theme_effect)
         self.button_color = resolve_button_color(
             self.theme,
             self.button_bg_mode,
@@ -314,6 +326,7 @@ class Front(NotesMixin):
             on_icon_pack_change=self.apply_icon_pack,
             on_button_color_change=self.apply_button_color,
             on_font_change=self.apply_font_settings,
+            on_effect_change=self.apply_theme_effect,
             icon_pack=self.icon_pack,
             button_color=self.button_color,
         )
@@ -359,7 +372,7 @@ class Front(NotesMixin):
             brightness = brightness.get("brightness")
         brightness = brightness or self.page.platform_brightness
 
-        next_theme = resolve_theme(self.theme_style, brightness)
+        next_theme = resolve_theme(self.theme_style, brightness, self.theme_effect)
         if next_theme != self.theme:
             self.apply_theme_style(self.theme_style, brightness)
 
@@ -374,6 +387,13 @@ class Front(NotesMixin):
 
     def apply_font_settings(self):
         """Rebuild text and keep customization open for further adjustments."""
+        self._refresh_customization()
+
+    def apply_theme_effect(self):
+        """Apply the material immediately and keep customization open."""
+        self._refresh_customization()
+
+    def _refresh_customization(self):
         group_id = self.current_group_id
         self.apply_theme_style(self.theme_style)
         if group_id is not None:
@@ -382,7 +402,7 @@ class Front(NotesMixin):
             if self.web:
                 self._set_screen(self.main_cont, push=True)
             else:
-                self.page.views.append(ft.View(
+                self.page.views.append(self.libs.view(
                     route="/tasks-font", controls=[self.main_cont],
                     padding=self.page_edge_padding,
                 ))
@@ -396,7 +416,11 @@ class Front(NotesMixin):
 
     def add_main_widgets(self):
         """Добавляет созданные в ``Frontend.main`` виджеты на главную страницу."""
-        self.add_input(self.button_add_task)
+        if self.phone:
+            if self.libs.glass_mobile and self.libs.glass:
+                self.libs.style_glass_add_button(self.button_add_task, large=True)
+        else:
+            self.add_input(self.button_add_task)
         self.add_input(self.settings)
         self.add_input(self.auth_btn)
         self.add_input(self.undo_btn)
@@ -410,12 +434,34 @@ class Front(NotesMixin):
                 controls=[buttons_row, self.upload_progress_cont],
                 spacing=0,
             )
+            if self.libs.glass_mobile:
+                self.libs.style_glass_toolbar(self.btns_cont, buttons_row)
+                controls = self.main_cont.content.controls
+                start = controls.index(self.tasks_cont)
+                end = controls.index(self.btns_cont) + 1
+                controls[start:end] = [self.libs.build_glass_body(
+                    self.tasks_cont, self.button_add_task, self.btns_cont,
+                )]
+            else:
+                # Кнопка лежит поверх фона списка, а отступ прокручивается
+                # вместе с делами и позволяет поднять последнее выше кнопки.
+                self.tasks_cont.expand = None
+                self.tasks_cont.left = self.tasks_cont.top = 0
+                self.tasks_cont.right = self.tasks_cont.bottom = 0
+                self.tasks_cont.content.padding = ft.Padding.only(bottom=100)
+                controls = self.main_cont.content.controls
+                controls[controls.index(self.tasks_cont)] = ft.Stack([
+                    self.tasks_cont,
+                    ft.Container(content=self.button_add_task, right=18, bottom=18),
+                ], fit=ft.StackFit.EXPAND, expand=True)
         else:
             self.add_input(self.search_btn)
             self.add_input(self.search_field)
             self.add_input(self.search_close_btn)
             self.add_input(self.filter_btn)
             self.add_input(self.upload_progress)
+            if self.libs.glass_toolbar:
+                self.libs.style_glass_toolbar_surface(self.btns_cont)
 
     def _refresh_undo_buttons(self):
         disabled = not self.back.can_undo()
@@ -510,7 +556,7 @@ class Front(NotesMixin):
             on_dismiss=dismiss_notes,
         )
         self._notes_dialog = dialog
-        self.page.show_dialog(dialog)
+        self.page.show_dialog(self.libs.prepare(dialog))
 
     def _finish_start_screen(self):
         """Продолжает обычный запуск после согласия с примечаниями."""
@@ -884,6 +930,7 @@ class Front(NotesMixin):
 
     def _update_control(self, control):
         """На сайте обновляет один control, на нативных клиентах — как раньше."""
+        self.libs.prepare(control)
         if self.web:
             control.update()
         else:
@@ -891,6 +938,7 @@ class Front(NotesMixin):
 
     def _update_screen_host(self):
         """Отправляет только изменение содержимого корневого экрана."""
+        self.libs.prepare(self.screen_host)
         try:
             self.screen_host.update()
         except RuntimeError:
@@ -1091,17 +1139,17 @@ class Front(NotesMixin):
             }
         return values
 
-    def open_page(self, header, content, cancel_button=None, route="dialog"):
+    def open_page(self, header, content, cancel_button=None, route="dialog", *, width=None):
         """Открывает экран оптимизированно на сайте и через View на клиентах."""
         if cancel_button is not None:
             cancel_button.on_click = self.close_page
-        body = self.libs.collection_widgets_fo_dialog(header, content, self.border)
+        body = self.libs.collection_widgets_fo_dialog(header, content, self.border, width=width)
         if self.web:
             self._set_screen(body, push=True)
         else:
             path = f"/{route}-{len(self.page.views)}"
             self.page.views.append(
-                ft.View(route=path, controls=[body], padding=self.page_edge_padding)
+                self.libs.view(route=path, controls=[body], padding=self.page_edge_padding)
             )
             asyncio.create_task(self.page.push_route(path))
             self.page.update()
@@ -1363,10 +1411,12 @@ class Front(NotesMixin):
         """Функция для открытия окна настроек.
         Главный экран содержит только кнопки-категории,
         по нажатию на каждую открывается свой диалог с настройками."""
-        group_id = self.current_group_id or "default"
+        group_id = self.current_group_id
         cached = self._settings_screens.get(group_id) if self.web else None
         if cached is not None:
-            self._set_screen(cached, push=True)
+            screen, self.settings_cont, only_current_group = cached
+            only_current_group.value = False
+            self._set_screen(screen, push=True)
             return
 
         self.settings_cont, a, primechanya, dialogs = (
@@ -1389,6 +1439,7 @@ class Front(NotesMixin):
         self.utils2.on_edit_repeat = self.open_edit_repeat_dialog
         self.utils2.on_edit_postponed = self.open_edit_postponed_dialog
         special["button"].on_click = lambda e: self.open_special_tasks()
+        dialogs["schedule"]["button"].on_click = lambda e: self.open_schedule()
 
         # «Управление делами» и «Общие настройки» теперь ExpansionTile:
         # их содержимое уже встроено в окно настроек, on_click не нужен.
@@ -1419,14 +1470,26 @@ class Front(NotesMixin):
         primechanya.on_click = lambda e: self.open_modified_dialog2(h, m, n)
 
         """Основное окно (только кнопки)"""
-        settings_screen = self.open_modified_dialog(
+        self.open_modified_dialog(
             self.libs.create_style_header(
             'Настройки'),
             self.settings_cont,
             a,
         )
         if self.web:
-            self._settings_screens[group_id] = settings_screen
+            self._settings_screens[group_id] = (
+                self.modified_dialog, self.settings_cont,
+                self.utils2.only_current_group_checkbox,
+            )
+
+    def open_schedule(self):
+        from .schedule import TaskSchedule
+
+        self.task_schedule = TaskSchedule(self)
+        self.open_page(
+            self.task_schedule.header, self.task_schedule.content,
+            self.task_schedule.back, "schedule", width=self.task_schedule.width,
+        )
 
     def _open_special_task_info(self, repeating):
         build_info = (
@@ -1909,7 +1972,7 @@ class Front(NotesMixin):
             return loading
         loading_route = f"/loading-{len(self.page.views)}"
         self.page.views.append(
-            ft.View(
+            self.libs.view(
                 route=loading_route,
                 controls=[loading],
                 padding=self.page_edge_padding,
@@ -2112,7 +2175,9 @@ class Front(NotesMixin):
             return
         self.current_group_id = None
         if not self.web:
-            groups_column = ft.Column(scroll=ft.ScrollMode.AUTO, spacing=10)
+            groups_column = ft.ListView(
+                scroll=ft.ScrollMode.AUTO, spacing=10, expand=True,
+                build_controls_on_demand=True)
 
             def refresh_groups():
                 groups_column.controls.clear()
@@ -2122,12 +2187,7 @@ class Front(NotesMixin):
 
             refresh_groups()
             header = self.libs.create_style_header("Группы дел и заметок")
-            main = self.libs.create_style_cont([
-                self._build_group_actions(),
-                self.groups_progress_cont,
-                groups_column,
-            ])
-            body = self.libs.collection_widgets_fo_dialog(header, main, self.border)
+            body = self._build_groups_body(header, groups_column)
 
             while len(self.page.views) > 1:
                 self.page.views.pop()
@@ -2139,7 +2199,9 @@ class Front(NotesMixin):
             return
 
         if self._groups_screen is None:
-            self._groups_column = ft.Column(scroll=ft.ScrollMode.AUTO, spacing=10)
+            self._groups_column = ft.ListView(
+                scroll=ft.ScrollMode.AUTO, spacing=10, expand=True,
+                build_controls_on_demand=True)
 
             def refresh_groups():
                 groups_column = self._groups_column
@@ -2156,17 +2218,43 @@ class Front(NotesMixin):
 
             self._refresh_groups = refresh_groups
             header = self.libs.create_style_header("Группы дел и заметок")
-            main = self.libs.create_style_cont([
-                self._build_group_actions(),
-                self.groups_progress_cont,
-                self._groups_column,
-            ])
-            self._groups_screen = self.libs.collection_widgets_fo_dialog(
-                header, main, self.border
-            )
+            self._groups_screen = self._build_groups_body(header, self._groups_column)
 
         self._refresh_groups()
         self._set_screen(self._groups_screen, reset=True)
+
+    def _build_groups_body(self, header, groups_column):
+        actions = self._build_group_actions()
+        if not self.libs.glass_mobile:
+            if self.libs.glass_toolbar:
+                actions = ft.Container(content=actions)
+                self.libs.style_glass_toolbar_surface(actions)
+            main = self.libs.create_style_cont([
+                actions, self.groups_progress_cont, groups_column,
+            ])
+            main.content.scroll = None
+            return self.libs.collection_widgets_fo_dialog(header, main, self.border)
+
+        # Список прокручивается отдельно: капсула всегда остаётся у нижнего края.
+        header.width = None
+        groups_column.expand = True
+        main = self.libs.create_style_cont([groups_column])
+        main.width = None
+        main.content.scroll = None
+        self.groups_btns_cont = ft.Container(content=ft.Column([
+            actions, self.groups_progress_cont,
+        ], spacing=0))
+        self.libs.style_glass_toolbar(self.groups_btns_cont, actions)
+        # Как в collection_widgets_fo_dialog: мобильный spacer и spacing
+        # перед заголовком нативного экрана; в веб-версии отступа нет.
+        top_padding = 0 if self.web else self.libs.height_for_dlg_spacer + 10
+        return self.libs.host(content=ft.Column([
+            header,
+            self.libs.build_glass_body(main, self.groups_add_btn, self.groups_btns_cont,
+                                       scrollable=groups_column),
+            ft.Container(height=20, visible=self.border.visible),
+        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+            padding=ft.Padding.only(top=top_padding), expand=True)
 
     def _build_group_actions(self):
         create = self.libs.create_style_button("Новая группа", ft.Icons.ADD_ROUNDED)
@@ -2174,7 +2262,14 @@ class Front(NotesMixin):
         # Expanded несовместим с неограниченной шириной содержимого.
         create.expand = None if self.phone else True
         create.on_click = self._open_create_group
-        controls = [create]
+        if self.libs.glass_mobile:
+            create = self.libs.build_button_with_image("plusS", "Новая группа", compact=False)
+            create.on_click = self._open_create_group
+            create.width = create.height = 56
+            if self.libs.glass:
+                self.libs.style_glass_add_button(create)
+            self.groups_add_btn = create
+        controls = [] if self.libs.glass_mobile else [create]
         for icon, label, handler in (
             ("settings", "Настройки", self.open_settings),
             ("auth", "Аккаунт", self.open_auth_dialog),
@@ -2215,7 +2310,7 @@ class Front(NotesMixin):
             else:
                 route = f"/tasks-{len(self.page.views)}"
                 self.page.views.append(
-                    ft.View(
+                    self.libs.view(
                         route=route,
                         controls=[self.main_cont],
                         padding=self.page_edge_padding,

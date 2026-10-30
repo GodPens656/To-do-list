@@ -12,6 +12,7 @@ from PIL import Image, UnidentifiedImageError
 from .core import Backend, local_today
 from .validation import text_length_error
 from .security import hash_password, verify_password
+from .schedule import build_schedule
 from .cloud import Cloud
 from .storage import save_data, empty_data, ensure_split_storage, load_all_sections, save_all_sections
 from .json_migration import migrate_legacy_storage
@@ -25,6 +26,7 @@ from .crypto import (
 from Frontend.theme import (
     normalize_button_background_mode,
     normalize_custom_color,
+    normalize_theme_effect,
     normalize_theme_style,
 )
 from Frontend.typography import normalize_font_family, normalize_font_size
@@ -52,7 +54,7 @@ class Backend2:
         self.back = back if back is not None else Backend(
             page=page, web_store=web_store, cloud=self.cloud
         )
-        self.phone = False
+        self.phone = self.back.get_device()
         if self.web:
             # Сайт: свои дела и настройки у каждого посетителя, в браузере
             # (Backend/webstorage.py) — миграции старых форматов (файлы на диске
@@ -307,9 +309,16 @@ class Backend2:
         if changed:
             self._save(data, undoable=False)
 
-    def delete_special_tasks(self, status):
+    def delete_special_tasks(self, status, group_id=None):
+        """Удаляет дела по статусу (None — все), при необходимости в одной группе."""
         data = self._load()
-        data["tasks"] = [task for task in data["tasks"] if str(task.get("status")) != str(status)]
+        data["tasks"] = [
+            task for task in data["tasks"]
+            if not (
+                (group_id is None or task.get("group", "default") == group_id)
+                and (status is None or str(task.get("status")) == str(status))
+            )
+        ]
         self._save(data)
         self.cloud.alg_for_redact()
 
@@ -322,6 +331,7 @@ class Backend2:
             "load_screen": "True",
             "special_tasks_separate_dialogs": "False",
             "theme_style": "chatgpt",
+            "theme_effect": "none",
             "font_family": "default",
             "font_size": "medium",
             "icon_pack": "minimalistic",
@@ -339,10 +349,18 @@ class Backend2:
         }
         settings = self._settings_read()
         changed = not settings
+        if settings.get("theme_style") == "liquid_glass":
+            settings["theme_style"] = "chatgpt"
+            settings.setdefault("theme_effect", "liquid_glass")
+            changed = True
         for key, value in default_settings.items():
             if key not in settings:
                 settings[key] = value
                 changed = True
+        effect = normalize_theme_effect(settings["theme_effect"], phone=getattr(self, "phone", False))
+        if effect != settings["theme_effect"]:
+            settings["theme_effect"] = effect
+            changed = True
         if changed:
             self._settings_write(settings)
 
@@ -368,6 +386,7 @@ class Backend2:
             "load_screen",
             "special_tasks_separate_dialogs",
             "theme_style",
+            "theme_effect",
             "font_family",
             "font_size",
             "icon_pack",
@@ -514,6 +533,9 @@ class Backend2:
             'theme_style': (
                 normalize_theme_style(settings.get("theme_style", "chatgpt"))
             ),
+            'theme_effect': normalize_theme_effect(
+                settings.get("theme_effect"), phone=getattr(self, "phone", False)
+            ),
             'icon_pack': (
                 settings.get("icon_pack", "minimalistic")
                 if (
@@ -596,6 +618,8 @@ class Backend2:
             status = self._normalize_notification_interval(status)
         elif setting == "theme_style":
             status = normalize_theme_style(status)
+        elif setting == "theme_effect":
+            status = normalize_theme_effect(status, phone=getattr(self, "phone", False))
         elif setting == "font_family":
             status = normalize_font_family(status)
         elif setting == "font_size":
@@ -788,6 +812,19 @@ class Backend2:
         self._save(data, undoable=False)
         self.cloud.alg_for_redact()
         return itog, today_str
+
+    def read_schedule(self, start, end, group_id=None):
+        """Read a calendar snapshot; viewing it never generates real tasks."""
+        data = self._load()
+        for item in data["repeat_tasks"]:
+            if isinstance(item, dict):
+                item["repeat_type"], item["repeat_value"] = self._normalize_repeat_rule(
+                    item.get("repeat_type", "day"), item.get("repeat_value", 1),
+                )
+        return build_schedule(
+            data, start, end, local_today(self.web, self.page),
+            self._generated_deadline, group_id,
+        )
 
     def read_repeat_tasks(self):
         """Возвращает список (текст_дела, тип_повторения, значение_повторения, группа, id)

@@ -9,6 +9,7 @@ from pathlib import Path
 from .theme import (
     BUTTON_BACKGROUND_OPTIONS,
     THEME_STYLE_OPTIONS,
+    theme_effect_options,
     get_theme_colors,
     normalize_custom_color,
 )
@@ -29,6 +30,7 @@ class Utils2:
         icon_pack="minimalistic",
         button_color=None,
         on_font_change=None,
+        on_effect_change=None,
     ):
         """Импорт классов и задание переменных"""
         self.cloud = cloud
@@ -39,6 +41,7 @@ class Utils2:
         self.on_icon_pack_change = on_icon_pack_change
         self.on_button_color_change = on_button_color_change
         self.on_font_change = on_font_change
+        self.on_effect_change = on_effect_change
         self.on_edit_repeat = None
         self.on_edit_postponed = None
 
@@ -92,14 +95,15 @@ class Utils2:
         page,
         command_for_notifications_settings=None,
         command_for_battery_settings=None,
-        group_id='default',
+        group_id=None,
         command_for_rebuild_tasks=None,
     ):
         """Главный экран настроек.
 
         Общие настройки и управление делами раскрываются на месте;
         остальные категории сохраняют текущую навигацию. group_id — id
-        текущей открытой группы дел: настройки "Разделять дела по датам"
+        текущей открытой группы дел (None — меню выбора групп).
+        Настройки "Разделять дела по датам"
         и "Подписывать дату создания дел" относятся именно к ней и
         хранятся в itog.json у самой группы. command_for_rebuild_tasks —
         лёгкая перестройка виджетов списка дел без синхронизации с
@@ -111,10 +115,10 @@ class Utils2:
 
 
         management_widgets = self.build_widgets_for_management_tasks(
-            command_for_rebuild_tasks
+            command_for_rebuild_tasks, group_id
         )
         general_widgets = self.build_widgets_for_general_sets(
-            command_for_update_tasks, group_id, command_for_rebuild_tasks
+            command_for_update_tasks, group_id or 'default', command_for_rebuild_tasks
         )
         btn_special = self.libs.create_style_category_button(
             ft.Icons.AUTO_AWESOME_ROUNDED, 'Особые дела'
@@ -142,6 +146,9 @@ class Utils2:
         primechanya_btn = self.libs.create_style_category_button(
             ft.Icons.STICKY_NOTE_2_ROUNDED, 'Примечания'
         )
+        btn_schedule = self.libs.create_style_category_button(
+            ft.Icons.CALENDAR_MONTH_ROUNDED, 'Расписание'
+        )
 
         """Главный контейнер настроек - только кнопки"""
         self.settings_cont = self.libs.create_style_cont(
@@ -150,6 +157,7 @@ class Utils2:
                     btn_customization,
                     btn_management,
                     btn_general,
+                    btn_schedule,
                     btn_security,
                     btn_notifications,
                     primechanya_btn,
@@ -172,6 +180,7 @@ class Utils2:
             self.build_dialog_customization()
 
         dialogs = {
+            'schedule': {'button': btn_schedule},
             'security': {'button': btn_security},
             'special': {
                 'button': btn_special,
@@ -369,7 +378,10 @@ class Utils2:
             info,
         ], scroll=ft.ScrollMode.AUTO)
         tasks = ft.Container(
-            content=ft.Column([], scroll=ft.ScrollMode.AUTO, height=page.height * 0.45),
+            content=ft.ListView(
+                [], spacing=10, build_controls_on_demand=True,
+                scroll=ft.ScrollMode.AUTO, height=page.height * 0.45, expand=True,
+            ),
             bgcolor=self.ContBgColor,
             border=ft.Border.all(0.5, self.BorderColor),
             border_radius=10,
@@ -431,27 +443,33 @@ class Utils2:
             back,
         )
 
-    def build_widgets_for_management_tasks(self, cmd_rebuild_widgets):
+    def build_widgets_for_management_tasks(self, cmd_rebuild_widgets, group_id=None):
         """Виджеты для управления делами"""
-        btn_del_all = self.libs.create_style_button("Удалить все дела")
-        btn_del_all.on_click = lambda: (
-            self.back2.delete_special_tasks(True),
-            self.back2.delete_special_tasks(False),
-            cmd_rebuild_widgets(),
+        only_current_group = ft.Checkbox(
+            label="Только для этой группы",
+            value=False,
+            disabled=group_id is None,
+            label_style=ft.TextStyle(size=self.libs.text_size(14)),
         )
+        self.only_current_group_checkbox = only_current_group
+
+        def delete_tasks(status):
+            selected_group = (
+                group_id if only_current_group.value and not only_current_group.disabled
+                else None
+            )
+            self.back2.delete_special_tasks(status, group_id=selected_group)
+            if cmd_rebuild_widgets is not None:
+                cmd_rebuild_widgets()
+
+        btn_del_all = self.libs.create_style_button("Удалить все дела")
+        btn_del_all.on_click = lambda e: delete_tasks(None)
 
         btn_del_uncomp = self.libs.create_style_button("Удалить все невыполненные дела")
-        btn_del_uncomp.on_click = lambda: (
-            self.back2.delete_special_tasks(False),
-            cmd_rebuild_widgets(),
-            print('Удалено все невыполненные')
-        )
+        btn_del_uncomp.on_click = lambda e: delete_tasks(False)
 
         btn_del_comp = self.libs.create_style_button("Удалить все выполненные дела")
-        btn_del_comp.on_click = lambda: (
-            self.back2.delete_special_tasks(True),
-            cmd_rebuild_widgets(),
-        )
+        btn_del_comp.on_click = lambda e: delete_tasks(True)
 
         btn_backup = self.libs.create_style_button(
             "Отправить бэкап", ft.Icons.CLOUD_UPLOAD_ROUNDED
@@ -491,7 +509,7 @@ class Utils2:
         return ft.Container(
             content=ft.Column([
                 btn_del_all, btn_del_uncomp, btn_del_comp,
-                btn_backup, backup_status,
+                only_current_group, btn_backup, backup_status,
             ])
         )
 
@@ -586,10 +604,12 @@ class Utils2:
                 return group["name"]
         return "Без группы"
 
-    def add_to_cont_with_repeat_task(self, task_name, repeat_type="day", repeat_value=1, group_id='default', task_id=None, metadata=None):
+    def add_to_cont_with_repeat_task(self, task_name, repeat_type="day", repeat_value=1, group_id='default', task_id=None, metadata=None, *, group_name=None):
         """Функция для добавления в контейнер для повторяющихся дел"""
 
         metadata = metadata or {}
+        if group_name is None:
+            group_name = self.get_group_name(group_id)
         interval_text = self._describe_repeat_rule(repeat_type, repeat_value)
         extra_text = (
             (
@@ -631,7 +651,7 @@ class Utils2:
                                 color=self.TxtColor,
                             ),
                             ft.Text(
-                                f"{interval_text} - {self.get_group_name(group_id)}",
+                                f"{interval_text} - {group_name}",
                                 size=self.libs.text_size(12),
                                 color=self.TxtColor,
                                 opacity=0.6,
@@ -675,10 +695,16 @@ class Utils2:
     def read_repeat_tasks_and_add_to_cont(self):
         """Функция для переноса всех повторяющихся дел в контейнер для управления ими"""
         a = self.back2.read_repeat_tasks()
+        # One fresh lookup per render, rather than loading every section for
+        # each card. Do not retain this map across edits or group renames.
+        groups = {group["id"]: group["name"] for group in self.back.get_groups()} if a else {}
         for task, repeat_type, repeat_value, group_id, task_id, metadata in a:
-            self.add_to_cont_with_repeat_task(task, repeat_type, repeat_value, group_id, task_id, metadata)
+            self.add_to_cont_with_repeat_task(
+                task, repeat_type, repeat_value, group_id, task_id, metadata,
+                group_name=groups.get(group_id, "Без группы"),
+            )
 
-    def add_to_cont_with_postponed_task(self, task_name, planned_date, group_id='default', task_id=None, metadata=None):
+    def add_to_cont_with_postponed_task(self, task_name, planned_date, group_id='default', task_id=None, metadata=None, *, group_name=None):
         if self.phone or self.libs.icon_pack in {"minimalistic", "minimalistic-blue"}:
             delete = self.libs.create_delete_button()
             edit = self.libs.create_edit_button()
@@ -689,6 +715,8 @@ class Utils2:
                 'redact', "Редактировать отложенное дело")
 
         metadata = metadata or {}
+        if group_name is None:
+            group_name = self.get_group_name(group_id)
         extra_text = (
             (
                 f"Дедлайн через: {metadata.get('deadline_days')} дн."
@@ -711,7 +739,7 @@ class Utils2:
                             color=self.TxtColor,
                         ),
                         ft.Text(
-                            f"Появится: {planned_date} - {self.get_group_name(group_id)}",
+                            f"Появится: {planned_date} - {group_name}",
                             size=self.libs.text_size(12),
                             color=self.TxtColor,
                             opacity=0.6,
@@ -739,8 +767,12 @@ class Utils2:
 
     def read_postponed_tasks_and_add_to_cont(self):
         a = self.back2.read_postponed_tasks()
+        groups = {group["id"]: group["name"] for group in self.back.get_groups()} if a else {}
         for task, planned_date, group_id, task_id, metadata in a:
-            self.add_to_cont_with_postponed_task(task, planned_date, group_id, task_id, metadata)
+            self.add_to_cont_with_postponed_task(
+                task, planned_date, group_id, task_id, metadata,
+                group_name=groups.get(group_id, "Без группы"),
+            )
 
 
     def build_widgets_for_general_sets(self, command_for_update_tasks=None, group_id='default', command_for_rebuild_tasks=None):
@@ -890,6 +922,25 @@ class Utils2:
                 self.on_theme_change(theme_style)
 
         theme_dropdown.on_select = change_theme
+
+        effect_dropdown = ft.Dropdown(
+            value=sets["theme_effect"],
+            options=[
+                ft.dropdown.Option(key=key, text=label)
+                for key, label in theme_effect_options(self.phone)
+            ],
+            tooltip="Эффект",
+            width=self.width_dialogs * 0.82,
+        )
+
+        def change_effect(e):
+            if effect_dropdown.value == self.back2.read_settings()["theme_effect"]:
+                return
+            self.back2.redact_setting("theme_effect", effect_dropdown.value)
+            if self.on_effect_change is not None:
+                self.on_effect_change()
+
+        effect_dropdown.on_select = change_effect
 
         font_dropdown = ft.Dropdown(
             label="Шрифт",
@@ -1174,7 +1225,7 @@ class Utils2:
                 ],
                 actions_alignment=ft.MainAxisAlignment.END,
             )
-            page.show_dialog(dialog)
+            page.show_dialog(self.libs.prepare(dialog))
 
         palette_button.on_click = open_color_palette
 
@@ -1196,6 +1247,8 @@ class Utils2:
         )
 
         return ft.Container(
+            # Keep the floating label inside the scrollable area's bounds.
+            padding=ft.Padding.only(top=8),
             content=ft.Column(
                 [
                     theme_dropdown,
@@ -1205,6 +1258,9 @@ class Utils2:
                         size=self.libs.text_size(12),
                         opacity=0.65,
                     ),
+                    ft.Divider(color=self.BorderColor),
+                    ft.Text("Эффект:", color=self.TxtColor),
+                    effect_dropdown,
                     ft.Divider(color=self.BorderColor),
                     icon_pack_dropdown,
                     custom_pack_help,

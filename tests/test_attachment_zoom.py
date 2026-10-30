@@ -14,9 +14,13 @@ from test_ui_state import make_front
 
 class AttachmentZoomTests(unittest.TestCase):
     def test_preview_buttons_zoom_and_reset_on_desktop_and_phone(self):
-        for phone in (False, True):
-            with self.subTest(phone=phone):
+        for phone, platform in ((False, ft.PagePlatform.WINDOWS),
+                                (True, ft.PagePlatform.ANDROID),
+                                (False, ft.PagePlatform.ANDROID),
+                                (False, ft.PagePlatform.IOS)):
+            with self.subTest(phone=phone, platform=platform):
                 front = make_front(phone=phone)
+                front.page.platform = platform
                 content = BytesIO()
                 Image.new("RGB", (120, 80), "blue").save(content, "PNG")
                 attachment = make_attachment("Фото.png", content.getvalue())
@@ -26,8 +30,13 @@ class AttachmentZoomTests(unittest.TestCase):
                 open_preview(None)
                 dialog = front.page.show_dialog.call_args.args[0]
                 viewer = dialog.content.content.controls[0]
-                if phone:
-                    _, clipboard_row, toolbar, _ = dialog.actions[0].content.controls
+                if phone or platform.is_mobile():
+                    rotate_row, clipboard_row, toolbar, hint = dialog.actions[0].content.controls
+                    self.assertEqual([b.content for b in rotate_row.controls],
+                                     ["Повернуть на 90°", "Скачать"])
+                    self.assertEqual([b.content for b in clipboard_row.controls],
+                                     ["В буфер обмена", "Закрыть"])
+                    self.assertIn("двумя пальцами", hint.value)
                     close_button = clipboard_row.controls[1]
                 else:
                     toolbar = dialog.content.content.controls[2]

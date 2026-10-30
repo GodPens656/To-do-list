@@ -66,6 +66,7 @@ class LargeListTests(unittest.TestCase):
                         self.assertIsInstance(front.tasks_cont.content, ft.ListView)
                         self.assertTrue(front.tasks_cont.content.build_controls_on_demand)
                         front.show_groups()
+                        front.open_group_management()
                         self.assertIsInstance(front._groups_column, ft.ListView)
                         self.assertTrue(front._groups_column.build_controls_on_demand)
                         self.assertTrue(front._groups_column.expand)

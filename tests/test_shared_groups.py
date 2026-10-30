@@ -347,7 +347,7 @@ class SharedGroupUITests(unittest.TestCase):
     def test_password_form_handles_errors_and_success_without_exposing_password(self):
         front = make_front()
         front.open_modified_dialog = Mock()
-        front.show_groups = Mock()
+        front._finish_group_edit = Mock()
         front.back.make_group_shared = Mock(side_effect=ValueError("Введите пароль"))
         group = front.back.get_groups()[0]
         front._open_share_group_dialog(group)
@@ -362,11 +362,11 @@ class SharedGroupUITests(unittest.TestCase):
         self.assertEqual(controls[2].value, "Введите пароль")
         self.assertIn("название изменить не получится", warning.value)
         self.assertFalse(create.disabled)
-        front.show_groups.assert_not_called()
+        front._finish_group_edit.assert_not_called()
         front.back.make_group_shared.side_effect = None
         asyncio.run(password.on_submit(None))
         front.back.make_group_shared.assert_called_with(group["id"], "пароль")
-        front.show_groups.assert_called_once()
+        front._finish_group_edit.assert_called_once()
         self.assertEqual(password.value, "")
 
     def test_share_dialog_copies_exact_group_name_and_handles_clipboard_failure(self):

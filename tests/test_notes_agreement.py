@@ -143,8 +143,8 @@ class NotesAgreementNavigationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(front.back2.read_settings()["notes_accepted"])
                     front.page.show_dialog.assert_called_once()
                     if web:
-                        self.assertEqual(front.screen_stack, [front._groups_screen])
-                        self.assertIs(front.screen_host.content, front._groups_screen)
+                        self.assertEqual(front.screen_stack, [front.main_cont])
+                        self.assertIs(front.screen_host.content, front.main_cont)
                     else:
                         self.assertEqual(len(front.page.views), 1)
                         self.assertEqual(front.page.views[0].route, "/groups")

@@ -148,11 +148,12 @@ class UndoUITests(unittest.TestCase):
 
     def test_group_toolbar_undo_restores_deleted_group(self):
         front = make_front()
+        front._update_control = Mock()
         front.show_groups()
         row = front._build_group_actions()
-        self.assertEqual(row.controls[-3].tooltip.message, 'Аккаунт')
-        self.assertIs(row.controls[-2], front.groups_undo_btn)
-        self.assertEqual(row.controls[-1].tooltip.message, 'Обновить дела')
+        self.assertEqual(row.controls[0].tooltip.message, 'Назад к делам')
+        self.assertEqual(row.controls[1].content, 'Новая группа')
+        self.assertIs(row.controls[-1], front.groups_undo_btn)
         group = front.back.create_group('Восстановить')
         front.back.delete_group(group)
         self.assertFalse(front.groups_undo_btn.disabled)

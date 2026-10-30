@@ -102,7 +102,7 @@ class Utils2:
 
         Общие настройки и управление делами раскрываются на месте;
         остальные категории сохраняют текущую навигацию. group_id — id
-        текущей открытой группы дел (None — меню выбора групп).
+        текущей открытой группы дел (None — общая вкладка «Все дела»).
         Настройки "Разделять дела по датам"
         и "Подписывать дату создания дел" относятся именно к ней и
         хранятся в itog.json у самой группы. command_for_rebuild_tasks —
@@ -118,7 +118,7 @@ class Utils2:
             command_for_rebuild_tasks, group_id
         )
         general_widgets = self.build_widgets_for_general_sets(
-            command_for_update_tasks, group_id or 'default', command_for_rebuild_tasks
+            command_for_update_tasks, group_id, command_for_rebuild_tasks
         )
         btn_special = self.libs.create_style_category_button(
             ft.Icons.AUTO_AWESOME_ROUNDED, 'Особые дела'
@@ -892,6 +892,8 @@ class Utils2:
         row2 = ft.Row([text2, switch2], scroll=ft.ScrollMode.AUTO)
         row3 = ft.Row([text3, switch3], scroll=ft.ScrollMode.AUTO)
         row4 = ft.Row([text4, switch4], scroll=ft.ScrollMode.AUTO)
+        for group_row in (row3, row4, title_row, counter_row):
+            group_row.visible = group_id is not None
         if self.back.get_group_type(group_id) == 'notes':
             text3.value = "Разделять заметки по датам\n(для данной группы)"
             text4.value = "Подписывать дату создания заметок\n(в данной группе)"

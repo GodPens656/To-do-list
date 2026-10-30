@@ -13,7 +13,7 @@ from Backend.cloud import Cloud
 from .libs import Fr_Libs
 from .auth import AuthWidgets
 from .settings import Utils2
-from .main import MainWidgets
+from .main import ALL_TASKS_GROUP_ID, MainWidgets
 from .notes import NotesMixin
 from .attachments import AttachmentEditor
 from Backend.notifications import NotificationService
@@ -169,7 +169,7 @@ class Front(NotesMixin):
         self.add_main_widgets()
         # При запуске сначала показывается загрузка. После неё гостю
         # сразу открываем экран авторизации, а авторизованному пользователю —
-        # обычный экран выбора групп.
+        # список дел с вкладками групп.
         if self._app_locked:
             self.show_app_lock()
         else:
@@ -347,7 +347,6 @@ class Front(NotesMixin):
         self.border = self.main_widgets.build_status_border(self.status_border)
         self.main_cont.content.controls.append(self.border)
 
-        self.current_group_id = None
         self.screen_host = None
         self.screen_stack = []
         self._reset_root_view()
@@ -399,13 +398,6 @@ class Front(NotesMixin):
         if group_id is not None:
             self.current_group_id = group_id
             self.render_daily_repeat_tasks()
-            if self.web:
-                self._set_screen(self.main_cont, push=True)
-            else:
-                self.page.views.append(self.libs.view(
-                    route="/tasks-font", controls=[self.main_cont],
-                    padding=self.page_edge_padding,
-                ))
         self.open_settings()
         header, content, back = self.utils2.build_dialog_customization()
         self.open_modified_dialog2(header, content, back)
@@ -425,9 +417,6 @@ class Front(NotesMixin):
         self.add_input(self.auth_btn)
         self.add_input(self.undo_btn)
         self.add_input(self.upd_btn)
-        if not self.phone:
-            self.add_input(self.groups_btn)
-
         if self.phone:
             buttons_row = self.btns_cont.content
             self.btns_cont.content = ft.Column(
@@ -481,14 +470,16 @@ class Front(NotesMixin):
         self._settings_screens.clear()
         self._refresh_special_task_lists()
         groups = self.back.get_groups()
-        if self.current_group_id is None or not any(
+        if self.current_group_id != ALL_TASKS_GROUP_ID and not any(
             group['id'] == self.current_group_id for group in groups
         ):
             self.show_groups()
         else:
             self._load_default_task_filter()
             self.render_daily_repeat_tasks()
-            self._update_control(self.tasks_cont)
+            if not self.web or (self.screen_stack and self.screen_stack[-1] is self.main_cont):
+                self._update_control(self.main_cont)
+        self._refresh_group_management()
 
     async def show_offline_start_dialog(self):
         """Показывает предупреждение при запуске без интернета."""
@@ -738,7 +729,7 @@ class Front(NotesMixin):
         cards = {controls[i].key: controls[i] for i in positions}
         tasks = self._sort_tasks(
             task for task in self.back.read_tasks()
-            if task.get("group") == self.current_group_id
+            if self._task_group_is_visible(task.get("group", "default"))
             and isinstance(task.get("name"), str) and task["name"].strip()
         )
         if len(tasks) != len(positions) or any(task["id"] not in cards for task in tasks):
@@ -753,7 +744,7 @@ class Front(NotesMixin):
         self.sets = self.back2.read_settings()
         group_filter = (
             self.back.get_group_default_filter(self.current_group_id)
-            if self.current_group_id is not None else None
+            if self.current_group_id not in (None, ALL_TASKS_GROUP_ID) else None
         )
         if group_filter is None:
             sort_mode = self.sets["default_task_sort"]
@@ -771,11 +762,11 @@ class Front(NotesMixin):
 
     def open_task_filter_dialog(self, e=None):
         """Открывает экран комплексного фильтра в общем стиле приложения."""
-        group_id = self.current_group_id
+        group_id = None if self.current_group_id == ALL_TASKS_GROUP_ID else self.current_group_id
         group_filter = self.back.get_group_default_filter(group_id)
         group_name = next(
             (group["name"] for group in self.back.get_groups() if group["id"] == group_id),
-            "Без группы",
+            "Все дела" if self.current_group_id == ALL_TASKS_GROUP_ID else "Без группы",
         )
         main_filter = ft.Dropdown(
             value=self.current_sort or "disabled",
@@ -969,6 +960,8 @@ class Front(NotesMixin):
                 if self.page.views[-1].route == "/groups":
                     self.show_groups()
                     return
+                if self.page.views[-1].controls == [self._groups_screen]:
+                    self._refresh_group_management()
                 asyncio.create_task(self.page.push_route(self.page.views[-1].route))
             self.page.update()
             return
@@ -976,8 +969,10 @@ class Front(NotesMixin):
             return
         self.screen_stack.pop()
         if self.screen_stack[-1] is self._groups_screen:
-            self.show_groups()
-            return
+            self._refresh_group_management()
+        elif self.screen_stack[-1] is self.main_cont:
+            self._ensure_current_group()
+            self.render_daily_repeat_tasks()
         self.screen_host.content = self.screen_stack[-1]
         self._update_screen_host()
 
@@ -1191,7 +1186,9 @@ class Front(NotesMixin):
             self.entry_task.border_color = None
 
             delo_obr = self.back.auto_add_new_string(name_task)
-            target_group_id = group_id or self.current_group_id or 'default'
+            target_group_id = group_id or (
+                'default' if self.current_group_id == ALL_TASKS_GROUP_ID else self.current_group_id
+            ) or 'default'
             if new_task:
                 id_ = self._guard_attachment_quota(self.back.saveB)(
                     name_task, target_group_id, created_date=created_date,
@@ -1208,7 +1205,7 @@ class Front(NotesMixin):
                 id_ = task_id if task_id is not None else self.back.read_id(name_task)
             # Храним и ищем исходное название; переносы нужны только для показа.
 
-            if (new_task or repeat_task) and target_group_id != (self.current_group_id or 'default'):
+            if (new_task or repeat_task) and not self._task_group_is_visible(target_group_id):
                 self.cloud.alg_for_redact()
                 self.back.delete_empty_lines()
                 self.page.update()
@@ -1221,6 +1218,10 @@ class Front(NotesMixin):
                 self.cloud.alg_for_redact()
                 self.back.delete_empty_lines()
 
+                # Возврат из формы уже мог перестроить весь открытый список.
+                if new_task and any(card.key == id_ for card in self.tasks_cont.content.controls):
+                    return True
+
                 if new_task and (self.current_sort or self.current_status_sort):
                     self._rebuild_sorted_tasks()
                     return True
@@ -1232,7 +1233,7 @@ class Front(NotesMixin):
                 tasks_in_group = sum(
                     1
                     for task_data in self.back.read_tasks()
-                    if task_data.get("group") == target_group_id
+                    if self._task_group_is_visible(task_data.get("group", "default"))
                 )
                 if tasks_in_group <= 10 and repeat_task:
                     self.render_daily_repeat_tasks()
@@ -1411,7 +1412,7 @@ class Front(NotesMixin):
         """Функция для открытия окна настроек.
         Главный экран содержит только кнопки-категории,
         по нажатию на каждую открывается свой диалог с настройками."""
-        group_id = self.current_group_id
+        group_id = None if self.current_group_id == ALL_TASKS_GROUP_ID else self.current_group_id
         cached = self._settings_screens.get(group_id) if self.web else None
         if cached is not None:
             screen, self.settings_cont, only_current_group = cached
@@ -2097,16 +2098,18 @@ class Front(NotesMixin):
 
     def render_daily_repeat_tasks(self):
         """Перестраивает список дел текущей группы без смены экрана."""
-        self._notes_group = self.back.get_group_type(self.current_group_id) == 'notes'
+        groups = self.back.get_groups()
+        self._ensure_current_group(groups)
+        all_tasks = self.current_group_id == ALL_TASKS_GROUP_ID
+        self._notes_group = any(group["id"] == self.current_group_id and group.get("type") == "notes"
+                                for group in groups)
         self.filter_btn.visible = not self._notes_group
         self.button_add_task.tooltip = "Добавить заметку" if self._notes_group else "Добавить новое дело"
         self.search_field.hint_text = "Найти заметку…" if self._notes_group else "Найти дело…"
         self.empty_state.content.controls[0].icon = (
             ft.Icons.NOTES_ROUNDED if self._notes_group else ft.Icons.CHECKLIST_ROUNDED
         )
-        group_settings = self.back.get_group_settings(
-            self.current_group_id or "default"
-        )
+        group_settings = self.back.get_group_settings(None if all_tasks else self.current_group_id)
         self.show_completion_counter = group_settings["show_completion_counter"]
         self.task_heading.visible = group_settings["show_group_title"]
         base = []
@@ -2118,12 +2121,13 @@ class Front(NotesMixin):
         if self._notes_group:
             self._render_notes(group_settings)
         else:
-            self.before_load(group_settings)
-        groups = self.back.get_groups()
+            self.before_load(group_settings, groups=groups)
         self.task_heading.value = next(
-            (g["name"] for g in groups if g["id"] == self.current_group_id), "Мои дела"
+            (g["name"] for g in groups if g["id"] == self.current_group_id),
+            "Все дела" if all_tasks else "Мои дела",
         )
         self.apply_search_filter(self.current_search)
+        self._refresh_group_tabs(groups)
 
     def check_and_add_postponed_task(self):
         """Добавляет отложенные дела в основной список, когда наступила их дата."""
@@ -2139,8 +2143,8 @@ class Front(NotesMixin):
             self.back.delete_empty_lines()
         return bool(tasks)
 
-    def before_load(self, group_settings=None):
-        """Загружает все дела текущей группы.
+    def before_load(self, group_settings=None, *, groups=None):
+        """Загружает дела выбранной группы или общий список.
 
         Если включена настройка "Разделять дела по датам", дела, созданные
         в один день, отображаются подряд, а между делами с разными датами
@@ -2149,10 +2153,15 @@ class Front(NotesMixin):
         self.back.migrate_groups_storage()
         tasks = self._sort_tasks(
             task for task in self.back.read_tasks()
-            if task.get("group") == self.current_group_id
+            if self._task_group_is_visible(task.get("group", "default"))
         )
         if group_settings is None:
-            group_settings = self.back.get_group_settings(self.current_group_id or 'default')
+            group_settings = self.back.get_group_settings(
+                None if self.current_group_id == ALL_TASKS_GROUP_ID else self.current_group_id
+            )
+        settings_by_group = {
+            group["id"]: group for group in (groups if groups is not None else self.back.get_groups())
+        } if self.current_group_id == ALL_TASKS_GROUP_ID else {}
         split_by_dates = group_settings["split_by_dates"]
         split_by_dates = (
             split_by_dates
@@ -2175,63 +2184,142 @@ class Front(NotesMixin):
                 "f", name, status, False, False, created_date=created_date,
                 deadline=data.get("deadline", ""), priority=data.get("priority", "Неважно"),
                 info_type=data.get("info_type", "created_date"),
-                task_id=data["id"], group_settings=group_settings, defer_update=True,
+                group_id=data.get("group", "default"), task_id=data["id"],
+                group_settings=settings_by_group.get(data.get("group", "default"), group_settings),
+                defer_update=True,
                 attachments=data.get("attachments"),
             )
 
     def show_groups(self, e=None):
-        """Показывает кэшированный корневой экран выбора групп."""
+        """Показывает список дел с вкладками групп на корневом экране."""
         if self._app_locked:
             return
-        self.current_group_id = None
-        if not self.web:
-            groups_column = ft.ListView(
-                scroll=ft.ScrollMode.AUTO, spacing=10, expand=True,
-                build_controls_on_demand=True)
+        self._ensure_current_group()
+        self._load_default_task_filter()
+        self.render_daily_repeat_tasks()
+        if self.web:
+            self._set_screen(self.main_cont, reset=True)
+            return
+        self.root_view.route = "/groups"
+        self.root_view.controls = [self.main_cont]
+        self.page.views[:] = [self.root_view]
+        asyncio.create_task(self.page.push_route("/groups"))
+        self.page.update()
 
-            def refresh_groups():
-                groups_column.controls.clear()
-                counts = self._group_task_counts()
-                for group in self.back.get_groups():
-                    self._append_group_row(groups_column, group, refresh_groups, counts)
+    def _ensure_current_group(self, groups=None):
+        groups = self.back.get_groups() if groups is None else groups
+        if self.current_group_id != ALL_TASKS_GROUP_ID and not any(
+            group["id"] == self.current_group_id for group in self._visible_groups(groups)
+        ):
+            self.current_group_id = ALL_TASKS_GROUP_ID
+            self.current_search = self.search_field.value = ""
+            self._load_default_task_filter()
 
-            refresh_groups()
-            header = self.libs.create_style_header("Группы дел и заметок")
-            body = self._build_groups_body(header, groups_column)
+    def _task_group_is_visible(self, group_id):
+        return self.current_group_id == ALL_TASKS_GROUP_ID or (group_id or "default") == self.current_group_id
 
-            while len(self.page.views) > 1:
-                self.page.views.pop()
-            self.root_view.route = "/groups"
-            self.root_view.controls = [body]
-            self.page.views[:] = [self.root_view]
-            asyncio.create_task(self.page.push_route("/groups"))
-            self.page.update()
+    @staticmethod
+    def _visible_groups(groups):
+        # Служебная группа продолжает хранить дела без отдельной группы.
+        # На новом аккаунте их представляет общая вкладка «Все дела».
+        return [group for group in groups if not (
+            group["id"] == "default" and group["name"] == "Без группы"
+            and group.get("type", "tasks") == "tasks" and not group.get("is_shared")
+        )]
+
+    def _refresh_group_tabs(self, groups=None):
+        groups = self.back.get_groups() if groups is None else groups
+        groups = [{"id": ALL_TASKS_GROUP_ID, "name": "Все дела", "type": "tasks"},
+                  *self._visible_groups(groups)]
+        signature = [(group["id"], group["name"], group.get("type"), group.get("is_shared"))
+                     for group in groups]
+        if signature != getattr(self, "_group_tabs_signature", None):
+            self._group_tabs_signature = signature
+            self.group_tab_bar.tabs = [
+                ft.Tab(
+                    label=ft.Row([
+                        ft.Icon(ft.Icons.NOTES_ROUNDED if group.get("type") == "notes"
+                                else ft.Icons.CHECKLIST_ROUNDED, size=18),
+                        ft.Text(group["name"] if len(group["name"]) <= 24
+                                else group["name"][:23] + "…", max_lines=1),
+                        *([ft.Icon(ft.Icons.LINK_ROUNDED, size=16)]
+                          if group.get("is_shared") else []),
+                    ], spacing=8, tight=True),
+                    data=group["id"], tooltip=group["name"], height=40,
+                ) for group in groups
+            ]
+            self.group_tab_bar.tabs.append(ft.Tab(label=self.group_add_btn, height=40))
+            self.group_tabs.length = len(groups) + 1
+        self.group_tabs.selected_index = next(
+            (index for index, group in enumerate(groups) if group["id"] == self.current_group_id), 0,
+        )
+
+    def _on_group_tab_change(self, event):
+        if self._app_locked:
+            return
+        index = event.control.selected_index
+        if not 0 <= index < len(self.group_tab_bar.tabs):
+            return
+        group_id = self.group_tab_bar.tabs[index].data
+        if group_id is None:
+            self._refresh_group_tabs()
+            self._update_control(self.group_tabs)
+            self._open_create_group()
+            return
+        if group_id == self.current_group_id:
+            return
+        self.current_group_id = group_id
+        self.current_search = self.search_field.value = ""
+        self._load_default_task_filter()
+        self.render_daily_repeat_tasks()
+        self._update_control(self.main_cont)
+
+    def open_group_management(self, e=None):
+        """Управление группами открывается отдельно от переключения вкладок."""
+        if self._app_locked:
             return
 
         if self._groups_screen is None:
             self._groups_column = ft.ListView(
                 scroll=ft.ScrollMode.AUTO, spacing=10, expand=True,
                 build_controls_on_demand=True)
-
-            def refresh_groups():
-                groups_column = self._groups_column
-                groups_column.controls.clear()
-                self._settings_screens.clear()
-                self.current_group_id = None
-                counts = self._group_task_counts()
-                for group in self.back.get_groups():
-                    self._append_group_row(groups_column, group, refresh_groups, counts)
-                try:
-                    groups_column.update()
-                except RuntimeError:
-                    pass
-
-            self._refresh_groups = refresh_groups
-            header = self.libs.create_style_header("Группы дел и заметок")
+            header = self.libs.create_style_header("Управление группами")
             self._groups_screen = self._build_groups_body(header, self._groups_column)
 
-        self._refresh_groups()
-        self._set_screen(self._groups_screen, reset=True)
+        self._refresh_group_management()
+        if self.web:
+            self._set_screen(self._groups_screen, push=True)
+        else:
+            self.page.views.append(self.libs.view(
+                route=f"/group-management-{len(self.page.views)}",
+                controls=[self._groups_screen], padding=self.page_edge_padding,
+            ))
+            asyncio.create_task(self.page.push_route(self.page.views[-1].route))
+            self.page.update()
+
+    def _refresh_group_management(self):
+        if self._groups_column is None:
+            return
+        self._settings_screens.clear()
+        self._ensure_current_group()
+        self._refresh_group_tabs()
+        self._groups_column.controls.clear()
+        counts = self._group_task_counts()
+        for group in self._visible_groups(self.back.get_groups()):
+            self._append_group_row(self._groups_column, group,
+                                   self._refresh_group_management, counts)
+        try:
+            self._update_control(self._groups_screen)
+        except RuntimeError:
+            pass
+
+    def _finish_group_edit(self):
+        """После сохранения возвращает к управлению или выбранной вкладке."""
+        self._settings_screens.clear()
+        self._ensure_current_group()
+        self.render_daily_repeat_tasks()
+        self.close_page()
+        self._refresh_group_management()
 
     def _build_groups_body(self, header, groups_column):
         actions = self._build_group_actions()
@@ -2279,12 +2367,11 @@ class Front(NotesMixin):
             if self.libs.glass:
                 self.libs.style_glass_add_button(create)
             self.groups_add_btn = create
-        controls = [] if self.libs.glass_mobile else [create]
+        back = self.libs.build_button_with_image("nazad", "Назад к делам", compact=False)
+        back.on_click = self.close_page
+        controls = [back] if self.libs.glass_mobile else [back, create]
         for icon, label, handler in (
-            ("settings", "Настройки", self.open_settings),
-            ("auth", "Аккаунт", self.open_auth_dialog),
             ("undo", "Отменить последнее действие", self.undo_last_action),
-            ("update", "Обновить дела", self.update_and_show_groups),
         ):
             button = self.libs.build_button_with_image(icon, label, compact=False)
             button.on_click = handler
@@ -2311,24 +2398,6 @@ class Front(NotesMixin):
         group_name = group["name"]
         is_notes = group.get('type') == 'notes'
 
-        def open_group(_=None, ident=group_id):
-            self.current_group_id = ident
-            self._load_default_task_filter()
-            self.render_daily_repeat_tasks()
-            if self.web:
-                self._set_screen(self.main_cont, push=True)
-            else:
-                route = f"/tasks-{len(self.page.views)}"
-                self.page.views.append(
-                    self.libs.view(
-                        route=route,
-                        controls=[self.main_cont],
-                        padding=self.page_edge_padding,
-                    )
-                )
-                asyncio.create_task(self.page.push_route(route))
-                self.page.update()
-
         def edit_group(_=None, ident=group_id, old_name=group_name):
             dialog = self.libs.widgets_for_ask_task(
                 "Введите новое название группы", "Сохранить", "Редактирование группы"
@@ -2342,7 +2411,7 @@ class Front(NotesMixin):
                     return
                 if self.back.rename_group(ident, entry.value):
                     self.cloud.alg_for_redact()
-                    self.show_groups()
+                    self._finish_group_edit()
                 else:
                     entry.label = "Введите корректное название"
                     entry.border_color = ft.Colors.RED
@@ -2400,12 +2469,11 @@ class Front(NotesMixin):
             *([ft.Icon(ft.Icons.LINK_ROUNDED, size=20, color=self.libs.FletIconColor,
                        tooltip="Подключена общая группа")]
               if group.get("is_shared") else []),
-            ft.Icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, size=20,
-                    color=self.libs.colors["MutedColor"]),
         ], spacing=12)
         group_btn.style.padding = 14
         group_btn.expand = True
-        group_btn.on_click = open_group
+        group_btn.on_click = None if group.get("is_shared") else edit_group
+        group_btn.tooltip = None if group.get("is_shared") else "Редактировать группу"
         groups_column.controls.append(ft.Row([group_btn, menu]))
 
     def _open_share_group_dialog(self, group):
@@ -2460,7 +2528,7 @@ class Front(NotesMixin):
                 progress.visible = False
             if success:
                 password.value = ""
-                self.show_groups()
+                self._finish_group_edit()
             else:
                 self.page.update()
 
@@ -2500,9 +2568,13 @@ class Front(NotesMixin):
         def save(_):
             if not self._validate_text_length(entry):
                 return
-            if self.back.create_group(entry.value, group_type=group_type.value):
+            group_id = self.back.create_group(entry.value, group_type=group_type.value)
+            if group_id:
                 self.cloud.alg_for_redact()
-                self.show_groups()
+                self.current_group_id = group_id
+                self.current_search = self.search_field.value = ""
+                self._load_default_task_filter()
+                self._finish_group_edit()
             else:
                 entry.label = "Введите корректное название"
                 entry.border_color = ft.Colors.RED
@@ -2588,7 +2660,7 @@ class Front(NotesMixin):
         if self.web:
             if not self.screen_stack or self.screen_stack[-1] is not self.main_cont:
                 return
-        elif not self.page.views or not self.page.views[-1].route.startswith("/tasks-"):
+        elif not self.page.views or self.page.views[-1].controls != [self.main_cont]:
             return
 
         base = []
@@ -2603,12 +2675,13 @@ class Front(NotesMixin):
         await asyncio.to_thread(self.cloud.alg_for_start_app)
         self.notification_service.data_changed()
         self._refresh_undo_buttons()
+        self._ensure_current_group()
         self.tasks_cont.content.controls = base
         self.check_and_add_repeat_task()
         self.check_and_add_postponed_task()
         self.render_daily_repeat_tasks()
-        self._update_control(self.tasks_cont)
+        self._update_control(self.main_cont)
 
     def update_and_show_groups(self, e=None):
-        """Обновляет данные и возвращает на экран выбора групп."""
+        """Обновляет данные и вкладки, сохраняя выбранную группу."""
         self.update_tasks(self.show_groups)

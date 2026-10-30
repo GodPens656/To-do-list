@@ -170,6 +170,7 @@ class DesktopGlassTests(unittest.TestCase):
             data["groups"] = [dict(id=f"g{i}", name=f"Group {i}") for i in range(count)]
             front.back.store.save_all_sections(data)
             front.show_groups()
+            front.open_group_management()
             front.libs.prepare(front._groups_screen)
             panels = [c for c in walk_controls(front._groups_screen)
                       if isinstance(c, ft.Container) and c.blur is not None]
@@ -240,6 +241,7 @@ class MobileGlassTests(unittest.TestCase):
                     self.assert_overlay(front.main_cont, front.tasks_cont,
                                         front.tasks_cont.content, front.btns_cont)
                 front.show_groups()
+                front.open_group_management()
                 screen = front._groups_screen
                 front.libs.prepare(screen)
                 self.assert_single_backdrop(screen, front.groups_btns_cont)

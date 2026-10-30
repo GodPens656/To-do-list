@@ -10,7 +10,7 @@ from Frontend.init_page import Front
 
 
 def make_front(theme="chatgpt", dark=False, phone=False, page=None, effect=None):
-    """Build real controls with isolated in-memory data and no cloud workers."""
+    """Build an existing personal group with isolated data and no cloud workers."""
     if page is None:
         page = Mock(
             web=True, width=360 if phone else 1100, height=800,
@@ -19,6 +19,7 @@ def make_front(theme="chatgpt", dark=False, phone=False, page=None, effect=None)
             views=[], overlay=[], _nd_timezone="Europe/Moscow",
         )
     store = WebSessionStore(page)
+    store._data["groups"][0]["name"] = "Личные дела"
     store._settings = {"theme_style": theme}
     if effect is not None:
         store._settings["theme_effect"] = effect
@@ -173,6 +174,7 @@ class TaskPresentationTests(unittest.TestCase):
         self.front.close_search(None)
         self.assertFalse(self.front.task_summary.visible)
         self.front.show_groups()
+        self.front.open_group_management()
         subtitle = self.front._groups_column.controls[0].controls[0].content.controls[1].controls[1]
         self.assertFalse(subtitle.visible)
         self.front.current_group_id = "default"
@@ -183,14 +185,14 @@ class TaskPresentationTests(unittest.TestCase):
         reopened = self.front.utils2.build_widgets_for_general_sets(group_id="default")
         self.assertTrue(reopened.content.controls[-1].controls[-1].value)
 
-    def test_return_to_groups_refreshes_counter_preference(self):
+    def test_return_to_management_refreshes_counter_preference(self):
         self.add_tasks()
         self.front.show_groups()
-        self.front.current_group_id = "default"
-        self.front._set_screen(self.front.main_cont, push=True)
+        self.front.open_group_management()
+        self.front.open_settings()
         self.front.back.update_group_settings("default", show_completion_counter=False)
         self.front.close_page()
-        self.assertIsNone(self.front.current_group_id)
+        self.assertEqual(self.front.current_group_id, "default")
         subtitle = self.front._groups_column.controls[0].controls[0].content.controls[1].controls[1]
         self.assertFalse(subtitle.visible)
 

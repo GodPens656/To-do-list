@@ -12,6 +12,8 @@ from Backend.storage import save_all_sections
 from Backend.webstorage import WebSessionStore
 from Frontend.init_page import Front
 from Frontend.libs import Fr_Libs
+from Frontend.main import ALL_TASKS_GROUP_ID
+from test_ui_state import make_front
 
 
 class GroupDefaultFilterTests(unittest.TestCase):
@@ -67,22 +69,22 @@ class GroupDefaultFilterTests(unittest.TestCase):
 
     def test_opening_groups_selects_their_defaults(self):
         self.back.set_group_default_filter("work", "deadline_asc", "complete_first")
-        self.front.web = True
-        self.front.phone = False
-        self.front.main_cont = ft.Container()
-        self.front._set_screen = Mock()
+        self.front = make_front()
+        self.front.back, self.front.back2 = self.back, self.back2
+        self.front._refresh_group_tabs()
+        self.front._update_control = Mock()
         self.front.render_daily_repeat_tasks = Mock()
         for group_id, expected in [
             ("work", ("deadline_asc", "complete_first")),
             ("home", ("priority_desc", "incomplete_first")),
-            ("default", ("priority_desc", "incomplete_first")),
+            (ALL_TASKS_GROUP_ID, ("priority_desc", "incomplete_first")),
             ("work", ("deadline_asc", "complete_first")),
         ]:
             with self.subTest(group=group_id):
-                column = ft.Column()
-                group = next(g for g in self.back.get_groups() if g["id"] == group_id)
-                self.front._append_group_row(column, group, Mock())
-                column.controls[0].controls[0].on_click(None)
+                self.front.group_tabs.selected_index = next(
+                    i for i, tab in enumerate(self.front.group_tab_bar.tabs) if tab.data == group_id
+                )
+                self.front.group_tabs.on_change(Mock(control=self.front.group_tabs))
                 self.assert_filter(*expected)
 
     def test_group_button_persists_disabled_override_and_preserves_other_data(self):

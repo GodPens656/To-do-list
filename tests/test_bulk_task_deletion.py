@@ -129,7 +129,7 @@ class BulkTaskDeletionUITests(unittest.TestCase):
         self.assertEqual(front.back2.read_settings(), original_settings)
         self.assertEqual(front.back._load(), original_data)
 
-    def test_groups_menu_disables_scope_after_opening_default_group_settings(self):
+    def test_root_tasks_keep_group_scope_after_returning_from_settings(self):
         for phone in (False, True):
             with self.subTest(phone=phone):
                 front = make_front(phone=phone)
@@ -140,7 +140,7 @@ class BulkTaskDeletionUITests(unittest.TestCase):
                 front.open_settings()
                 checkbox = self.management_controls(front)[3]
                 self.assertFalse(checkbox.value)
-                self.assertTrue(checkbox.disabled)
+                self.assertFalse(checkbox.disabled)
                 front.close_page()
                 front.current_group_id = 'default'
                 front.open_settings()

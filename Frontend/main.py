@@ -12,6 +12,9 @@ from .info import Utils3
 from .attachments import AttachmentEditor
 
 
+ALL_TASKS_GROUP_ID = "__all_tasks__"
+
+
 class MainWidgets(Utils3):
     """Main-screen widget factory facade."""
 
@@ -81,10 +84,40 @@ class MainWidgets(Utils3):
         self.undo_btn.disabled = not self.back.can_undo()
         self.undo_btn.on_click = self.undo_last_action
         self.back.on_undo_change = self._refresh_undo_buttons
-        self.groups_btn = self.libs.build_button_with_image(
-            'nazad', 'К группам', size=48, compact=False
+        self.group_settings_btn = ft.IconButton(
+            icon=ft.Icons.TUNE_ROUNDED, tooltip="Управление вкладками",
+            icon_size=20, icon_color=self.libs.FletIconColor,
+            width=32, height=32, padding=4, bgcolor=ft.Colors.TRANSPARENT,
+            style=ft.ButtonStyle(visual_density=ft.VisualDensity.COMPACT),
+            on_click=self.open_group_management,
         )
-        self.groups_btn.on_click = self.close_page
+        self.group_add_btn = ft.IconButton(
+            icon=ft.Icons.ADD_ROUNDED, tooltip="Новая группа",
+            icon_size=20, icon_color=self.libs.FletIconColor,
+            width=32, height=32, padding=4, bgcolor=ft.Colors.TRANSPARENT,
+            style=ft.ButtonStyle(visual_density=ft.VisualDensity.COMPACT),
+            on_click=self._open_create_group,
+        )
+        self._group_tabs_signature = None
+        self.group_tab_bar = ft.TabBar(
+            tabs=[ft.Tab(label="Все дела", data=ALL_TASKS_GROUP_ID),
+                  ft.Tab(label=self.group_add_btn, height=40)],
+            scrollable=True, tab_alignment=ft.TabAlignment.START,
+            indicator_color=self.ProgressColor,
+            label_color=self.TxtColor,
+            unselected_label_color=self.libs.colors["MutedColor"],
+            divider_color=self.libs.colors["SoftBorderColor"],
+            label_text_style=ft.TextStyle(size=self.libs.text_size(14)),
+            label_padding=ft.Padding.symmetric(horizontal=10),
+            expand=True, height=40,
+        )
+        self.group_tabs = ft.Tabs(
+            content=ft.Row([
+                self.group_settings_btn, self.group_tab_bar,
+            ], spacing=2),
+            length=2, height=40, on_change=self._on_group_tab_change,
+        )
+        self.main_cont.content.controls.insert(0, self.group_tabs)
 
         self.settings.on_click = self.open_settings
         self.auth_btn.on_click = self.open_auth_dialog
@@ -172,7 +205,6 @@ class MainWidgets(Utils3):
             self.search_btn.expand = True
             self.search_row_widget = ft.Row(
                 controls=[
-                    self.groups_btn,
                     self.search_btn,
                     self.search_field,
                     self.search_close_btn,

@@ -48,8 +48,8 @@ if __name__ == "__main__":
 
     ft.run(
         main,
-        #view=ft.AppView.WEB_BROWSER,
-        #host=_host,
-        #port=_port,
+        view=ft.AppView.WEB_BROWSER,
+        host=_host,
+        port=_port,
         assets_dir=str(_assets_dir),
     )

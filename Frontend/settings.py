@@ -1,6 +1,7 @@
 import asyncio
 
 import flet as ft
+from .controls import LazyListView
 from .attachments import attachment_controls
 from flet_color_pickers import ColorLabelType, ColorPicker, PaletteType
 from datetime import datetime
@@ -16,6 +17,7 @@ from .theme import (
 from .libs import Fr_Libs
 from .typography import FONT_FAMILY_OPTIONS, FONT_SIZE_OPTIONS
 from .layout import ACTION_PANEL_OPTIONS, GROUP_PANEL_OPTIONS
+from .wallpaper import WALLPAPER_OPTIONS, normalize_wallpaper_intensity
 
 
 class Utils2:
@@ -33,6 +35,8 @@ class Utils2:
         on_font_change=None,
         on_effect_change=None,
         on_layout_change=None,
+        on_wallpaper_change=None,
+        on_dialog_animations_change=None,
     ):
         """Импорт классов и задание переменных"""
         self.cloud = cloud
@@ -45,6 +49,8 @@ class Utils2:
         self.on_font_change = on_font_change
         self.on_effect_change = on_effect_change
         self.on_layout_change = on_layout_change
+        self.on_wallpaper_change = on_wallpaper_change
+        self.on_dialog_animations_change = on_dialog_animations_change
         self.on_edit_repeat = None
         self.on_edit_postponed = None
 
@@ -176,16 +182,8 @@ class Utils2:
 
         )
 
-        """Содержимое диалогов для категорий, которые открываются отдельно"""
-        notifications_header, notifications_content, notifications_back = \
-            self.build_dialog_notifications(
-                page,
-                command_for_notifications_settings,
-                command_for_battery_settings,
-            )
-        customization_header, customization_content, customization_back = \
-            self.build_dialog_customization()
-
+        # Build separate categories only when opened. Besides avoiding unused
+        # controls, this reads current settings on every visit.
         dialogs = {
             'achievements': {'button': btn_achievements},
             'schedule': {'button': btn_schedule},
@@ -195,15 +193,13 @@ class Utils2:
             },
             'notifications': {
                 'button': btn_notifications,
-                'header': notifications_header,
-                'content': notifications_content,
-                'back': notifications_back,
+                'build': lambda: self.build_dialog_notifications(
+                    page, command_for_notifications_settings, command_for_battery_settings,
+                ),
             },
             'customization': {
                 'button': btn_customization,
-                'header': customization_header,
-                'content': customization_content,
-                'back': customization_back,
+                'build': self.build_dialog_customization,
             },
         }
 
@@ -386,7 +382,7 @@ class Utils2:
             info,
         ], scroll=ft.ScrollMode.AUTO)
         tasks = ft.Container(
-            content=ft.ListView(
+            content=LazyListView(
                 [], spacing=10, build_controls_on_demand=True,
                 scroll=ft.ScrollMode.AUTO, height=page.height * 0.45, expand=True,
             ),
@@ -952,6 +948,66 @@ class Utils2:
 
         effect_dropdown.on_select = change_effect
 
+        wallpaper_dropdown = ft.Dropdown(
+            label="Анимированные обои",
+            value=sets["animated_wallpaper"],
+            options=[ft.dropdown.Option(key=key, text=label) for key, label in WALLPAPER_OPTIONS],
+            width=self.width_dialogs * 0.82,
+        )
+        wallpaper_intensity = ft.Text(
+            f"Интенсивность обоев: {sets['wallpaper_intensity']}%", color=self.TxtColor,
+        )
+        wallpaper_slider = ft.Slider(
+            min=10, max=100, divisions=90, value=sets["wallpaper_intensity"],
+            label="{value}%",
+        )
+        wallpaper_intensity_controls = ft.Column(
+            [wallpaper_intensity, wallpaper_slider], spacing=0,
+            disabled=sets["animated_wallpaper"] == "none",
+        )
+
+        def change_wallpaper(_):
+            if wallpaper_dropdown.value == self.back2.read_settings()["animated_wallpaper"]:
+                return
+            self.back2.redact_setting("animated_wallpaper", wallpaper_dropdown.value)
+            wallpaper_intensity_controls.disabled = wallpaper_dropdown.value == "none"
+            if self.on_wallpaper_change is not None:
+                self.on_wallpaper_change()
+
+        def preview_wallpaper_intensity(event):
+            # A queued drag event can arrive after control state has advanced.
+            ft.context.disable_auto_update()
+            event_value = getattr(event, "data", None)
+            value = normalize_wallpaper_intensity(
+                wallpaper_slider.value if event_value is None else event_value)
+            wallpaper_slider.value = value
+            wallpaper_intensity.value = f"Интенсивность обоев: {value}%"
+            if self.on_wallpaper_change is not None:
+                self.on_wallpaper_change(intensity=value)
+            try:
+                wallpaper_intensity.update()
+            except RuntimeError:
+                # The settings panel may not have mounted yet.
+                pass
+            return value
+
+        def save_wallpaper_intensity(event):
+            value = preview_wallpaper_intensity(event)
+            self.back2.redact_setting("wallpaper_intensity", value)
+
+        wallpaper_dropdown.on_select = change_wallpaper
+        wallpaper_slider.on_change = preview_wallpaper_intensity
+        wallpaper_slider.on_change_end = save_wallpaper_intensity
+
+        dialog_animations = ft.Switch(value=sets["dialog_animations"])
+
+        def change_dialog_animations(_):
+            self.back2.redact_setting("dialog_animations", dialog_animations.value)
+            if self.on_dialog_animations_change is not None:
+                self.on_dialog_animations_change()
+
+        dialog_animations.on_change = change_dialog_animations
+
         def position_selector(setting, label, options):
             control = ft.Dropdown(
                 label=label, value=sets[setting],
@@ -1293,6 +1349,22 @@ class Utils2:
                     ft.Divider(color=self.BorderColor),
                     ft.Text("Эффект:", color=self.TxtColor),
                     effect_dropdown,
+                    ft.Divider(color=self.BorderColor),
+                    wallpaper_dropdown,
+                    wallpaper_intensity_controls,
+                    ft.Text(
+                        "Цвета обоев подстраиваются под акцентный цвет темы.",
+                        color=self.TxtColor, size=self.libs.text_size(12), opacity=0.65,
+                    ),
+                    ft.Divider(color=self.BorderColor),
+                    ft.Row([
+                        ft.Text("Анимации от диалогов", color=self.TxtColor, expand=True),
+                        dialog_animations,
+                    ]),
+                    ft.Text(
+                        "Отключение анимации открытия окон улучшает производительность.",
+                        color=self.TxtColor, size=self.libs.text_size(12), opacity=0.65,
+                    ),
                     ft.Divider(color=self.BorderColor),
                     action_position,
                     group_position,

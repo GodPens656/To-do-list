@@ -78,6 +78,16 @@ class GlassTests(unittest.TestCase):
         self.assertIsNone(button.content.alignment)
         self.assertEqual(button.content.padding, 2)
 
+    def test_compact_material_uses_the_same_transparency_as_panels(self):
+        for theme in ("liquid_glass_light", "liquid_glass_dark"):
+            with self.subTest(theme=theme):
+                libs = Fr_Libs(theme, False)
+                button = libs.build_button_with_image("nazad", "Назад")
+                panel = libs.create_style_cont([button])
+                libs.prepare(panel)
+                self.assertEqual(button.content.gradient, panel.gradient)
+                self.assertIsNone(button.content.bgcolor)
+
     def test_text_buttons_in_editor_and_dialogs_support_material(self):
         button = ft.TextButton("Прикрепить файлы", icon=ft.Icons.ATTACH_FILE_ROUNDED)
         self.prepare(button)
@@ -202,10 +212,13 @@ class MobileGlassTests(unittest.TestCase):
         controls = self.walk(screen)
         surfaces = [c for c in controls if isinstance(c, ft.Container)]
         self.assertEqual([c for c in surfaces if c.blur is not None], [toolbar])
-        self.assertEqual([c for c in surfaces if c.gradient is not None], [toolbar])
+        glass_surfaces = [c for c in surfaces if c.gradient is not None]
+        self.assertGreater(len(glass_surfaces), 1)
+        for surface in glass_surfaces:
+            self.assertEqual(surface.gradient, toolbar.gradient)
+            self.assertIsNone(surface.bgcolor)
         self.assertFalse(any(c.shadow is not None for c in surfaces))
         highlights = [c for c in surfaces if c.foreground_decoration is not None]
-        self.assertTrue(highlights)
         self.assertNotIn(toolbar, highlights)
         self.assertTrue(all(len(c.foreground_decoration.gradient.colors) == 2 for c in highlights))
         self.assertFalse(any(getattr(c, "_nd_glass_skin", None) for c in controls))
@@ -214,8 +227,8 @@ class MobileGlassTests(unittest.TestCase):
         stack = next(c for c in self.walk(screen) if isinstance(c, ft.Stack))
         self.assertIs(stack.controls[0], list_container)
         self.assertEqual(list_container.bottom, 0)
-        self.assertIsNotNone(list_container.bgcolor)
-        self.assertIsNone(list_container.gradient)
+        self.assertIsNone(list_container.bgcolor)
+        self.assertEqual(list_container.gradient, toolbar.gradient)
         menu = stack.controls[-1]
         self.assertIs(menu.content, toolbar)
         self.assertGreater(menu.bottom, 0)

@@ -31,6 +31,7 @@ from Frontend.theme import (
 )
 from Frontend.typography import normalize_font_family, normalize_font_size
 from Frontend.layout import normalize_action_panel_position, normalize_group_panel_position
+from Frontend.wallpaper import normalize_wallpaper, normalize_wallpaper_intensity
 
 class Backend2:
     CUSTOM_ICON_NAMES = (
@@ -333,6 +334,9 @@ class Backend2:
             "special_tasks_separate_dialogs": "False",
             "theme_style": "chatgpt",
             "theme_effect": "none",
+            "animated_wallpaper": "none",
+            "wallpaper_intensity": "60",
+            "dialog_animations": "True",
             "action_panel_position": normalize_action_panel_position(None, phone=getattr(self, "phone", False)),
             "group_panel_position": "top",
             "font_family": "default",
@@ -398,6 +402,9 @@ class Backend2:
             "special_tasks_separate_dialogs",
             "theme_style",
             "theme_effect",
+            "animated_wallpaper",
+            "wallpaper_intensity",
+            "dialog_animations",
             "action_panel_position",
             "group_panel_position",
             "font_family",
@@ -549,6 +556,9 @@ class Backend2:
             'theme_effect': normalize_theme_effect(
                 settings.get("theme_effect"), phone=getattr(self, "phone", False)
             ),
+            'animated_wallpaper': normalize_wallpaper(settings.get("animated_wallpaper")),
+            'wallpaper_intensity': normalize_wallpaper_intensity(settings.get("wallpaper_intensity")),
+            'dialog_animations': self._to_bool(settings.get("dialog_animations", "True")),
             'action_panel_position': normalize_action_panel_position(
                 settings.get("action_panel_position"), phone=getattr(self, "phone", False)
             ),
@@ -637,6 +647,10 @@ class Backend2:
             status = normalize_theme_style(status)
         elif setting == "theme_effect":
             status = normalize_theme_effect(status, phone=getattr(self, "phone", False))
+        elif setting == "animated_wallpaper":
+            status = normalize_wallpaper(status)
+        elif setting == "wallpaper_intensity":
+            status = normalize_wallpaper_intensity(status)
         elif setting == "action_panel_position":
             status = normalize_action_panel_position(status, phone=getattr(self, "phone", False))
         elif setting == "group_panel_position":

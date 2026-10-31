@@ -6,6 +6,8 @@ from typing import Any, ForwardRef, get_args
 
 import flet as ft
 
+from .controls import SurfaceHost
+
 
 def is_glass(theme):
     return str(theme).startswith("liquid_glass_")
@@ -52,7 +54,7 @@ def glass_border(theme):
     return ft.Border.all(1, _palette(theme)["GlassEdgeColor"])
 
 
-def glass_gradient(theme, *, compact=False, mobile=False):
+def glass_gradient(theme, *, mobile=False):
     dark = str(theme).endswith("dark")
     colors = _palette(theme)
     if mobile:
@@ -66,8 +68,8 @@ def glass_gradient(theme, *, compact=False, mobile=False):
         begin=ft.Alignment.TOP_LEFT,
         end=ft.Alignment.BOTTOM_RIGHT,
         colors=[
-            ft.Colors.with_opacity((0.24 if compact else 0.18) if dark else (0.82 if compact else 0.68), "#FFFFFF"),
-            ft.Colors.with_opacity(0.35 if compact else 0.25, colors["BtnColor"] if compact else colors["ContBgColor"]),
+            ft.Colors.with_opacity(0.18 if dark else 0.68, "#FFFFFF"),
+            ft.Colors.with_opacity(0.25, colors["ContBgColor"]),
             ft.Colors.with_opacity(0.10, colors["ProgressColor"]),
             ft.Colors.with_opacity(0.14 if dark else 0.45, colors["ContBgColor"]),
         ],
@@ -82,20 +84,23 @@ def glass_surface(container, theme, *, radius=None, compact=False, tint=None,
     container.bgcolor = tint
     # A Flutter background gradient replaces the color shader. Keep semantic
     # tints as the background and paint the reflection in the foreground.
-    container.gradient = None if tint is not None else glass_gradient(theme, compact=compact, mobile=mobile)
+    container.gradient = None if tint is not None else glass_gradient(theme, mobile=mobile)
     container.border_radius = radius if radius is not None else (container.border_radius or 16)
     container.border = glass_border(theme)
     # Only outer panels sample the backdrop. Cards, badges and buttons reuse
     # that material with a gradient and border instead of another GPU filter.
-    sigma = 8 if mobile else 12
+    sigma = 5 if mobile else 6
     container.blur = ft.Blur(sigma, sigma) if backdrop else None
-    container.clip_behavior = ft.ClipBehavior.ANTI_ALIAS
+    # Rounded decorations already paint their own corners. Only filtered
+    # panels need to clip their descendants; clipping every card/button adds
+    # work while scrolling large lists.
+    container.clip_behavior = ft.ClipBehavior.ANTI_ALIAS if backdrop else ft.ClipBehavior.NONE
     if mobile or not backdrop:
         container.shadow = None
         container.foreground_decoration = None
         return container
     container.shadow = ft.BoxShadow(
-        blur_radius=8 if compact else 20, spread_radius=-3 if compact else -5,
+        blur_radius=8 if compact else 12, spread_radius=-3 if compact else -5,
         offset=ft.Offset(0, 2 if compact else 7),
         color="#38030918" if dark else "#18314D7B",
     )
@@ -171,6 +176,11 @@ def _button_material(button, theme, colors, *, mobile=False):
     slot = "icon" if icon_button else "content"
     content = getattr(button, slot)
     skin = getattr(button, "_nd_glass_skin", None)
+    state = (button.width, button.height, button.disabled,
+             button.icon_size if icon_button else None)
+    if (skin is not None and content is skin
+            and getattr(button, "_nd_glass_button_state", None) == state):
+        return
     if content is not skin or skin is None:
         style = button.style or ft.ButtonStyle()
         padding = getattr(button, "_nd_glass_padding", None)
@@ -221,6 +231,7 @@ def _button_material(button, theme, colors, *, mobile=False):
     # Alignment on a width-less Container expands it to the Wrap's full width.
     skin.alignment = ft.Alignment.CENTER if skin.width is not None else None
     skin.opacity = 0.45 if button.disabled else 1
+    object.__setattr__(button, "_nd_glass_button_state", state)
 
 
 def _contains_controls(annotation):
@@ -240,11 +251,11 @@ def _child_fields(control_type):
                  and not field.metadata.get("skip") and _contains_controls(field.type))
 
 
-def apply_glass(control, theme, colors, *, mobile=False):
+def apply_glass(control, theme, colors, *, mobile=False, recursive_hosts=True):
     """Style descendants without replacing controls or resetting their state.
 
-    GlassHost calls this at Flet's update boundary, so newly created task cards,
-    attachment buttons and expanded settings receive the same material.
+    Explicit preparation traverses the whole tree. At Flet's update boundary,
+    each nested host handles its own children exactly once.
     """
     if not is_glass(theme):
         return control
@@ -268,8 +279,6 @@ def apply_glass(control, theme, colors, *, mobile=False):
                 if (getattr(item, "_nd_glass_material", False)
                         or getattr(item, "_nd_glass_toolbar", False)):
                     pass
-                elif lightweight:
-                    _light_glass_surface(item, theme)
                 elif item.bgcolor in surface_colors:
                     # Unadorned layout containers must remain transparent;
                     # otherwise several large panes hide the backdrop entirely.
@@ -277,8 +286,12 @@ def apply_glass(control, theme, colors, *, mobile=False):
                         item.bgcolor = None
                     else:
                         warning = item.bgcolor == colors["WarnBgColor"]
+                        # Both effects share the toolbar's transparency. Half
+                        # glass paints the same surface without another filter.
                         glass_surface(item, theme, tint=colors["WarnBgColor"] if warning else None,
-                                      mobile=mobile, backdrop=not in_backdrop)
+                                      mobile=mobile, backdrop=not lightweight and not in_backdrop)
+                elif lightweight:
+                    _light_glass_surface(item, theme)
                 elif item.bgcolor not in (None, ft.Colors.TRANSPARENT) and item.border_radius:
                     # Priority/date badges and color previews retain their tint.
                     glass_surface(item, theme, compact=True, tint=item.bgcolor, mobile=mobile)
@@ -354,6 +367,8 @@ def apply_glass(control, theme, colors, *, mobile=False):
                 item.blur = item.shadow = item.foreground_decoration = None
             else:
                 in_backdrop = True
+        if not recursive_hosts and item is not control and isinstance(item, GlassHost):
+            return
         for name in _child_fields(type(item)):
             child = getattr(item, name)
             if isinstance(child, (list, tuple)):
@@ -376,7 +391,7 @@ def glass_menu_style(theme, colors):
     )
 
 
-class GlassHost(ft.Container):
+class GlassHost(SurfaceHost):
     """A normal Container that styles new children before they are serialized."""
 
     def __init__(self, theme, colors, *, mobile=False, **kwargs):
@@ -387,8 +402,10 @@ class GlassHost(ft.Container):
 
     def before_update(self):
         super().before_update()
+        if self.is_isolated():
+            return
         apply_glass(self, self._nd_glass_theme, self._nd_glass_colors,
-                    mobile=self._nd_glass_mobile)
+                    mobile=self._nd_glass_mobile, recursive_hosts=False)
 
 
 def configure_glass_theme(result, theme, colors):

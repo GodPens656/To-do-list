@@ -33,6 +33,11 @@ class ThemeEffectTests(unittest.TestCase):
                         front.back.saveB("Проверить эффект", "default", info_type="priority", priority="Важно")
                         front.render_daily_repeat_tasks()
                         front.libs.prepare(front.main_cont)
+                        self.assertIsNone(front.tasks_cont.bgcolor)
+                        self.assertEqual(front.tasks_cont.gradient, front.btns_cont.gradient)
+                        card = next(c for c in front.tasks_cont.content.controls
+                                    if isinstance(c.data, str))
+                        self.assertEqual(card.gradient, front.btns_cont.gradient)
                         front.show_groups()
                         self.assertEqual(len(front.back.read_tasks()), 1)
                         if effect == "liquid_glass":

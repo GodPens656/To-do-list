@@ -47,8 +47,9 @@ class NotesMixin:
         dialog['btn_create_task'].on_click = save
         self.open_page(dialog['Header'], dialog['Main Cont'], dialog['cancel'], 'note')
 
-    def _render_notes(self, group_settings):
-        notes = self.back.read_notes(self.current_group_id)
+    def _render_notes(self, group_settings, *, notes=None):
+        if notes is None:
+            notes = self.back.read_notes(self.current_group_id)
         last_date = None
         for note in notes:
             created_date = note.get('created_date', '')
@@ -71,7 +72,7 @@ class NotesMixin:
                 self.back.delete_note(group_id, note_id)
                 self.render_daily_repeat_tasks()
                 self.cloud.alg_for_redact()
-                self.page.update()
+                self._update_control(self.main_cont)
 
             delete.on_click = delete_note
             self.to_task_content(card)

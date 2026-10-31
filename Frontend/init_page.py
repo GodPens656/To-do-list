@@ -4,6 +4,7 @@ from functools import wraps
 from datetime import date, datetime, timezone
 
 import flet as ft
+from .controls import LazyListView
 from Backend.app_paths import get_assets_dir
 from Backend.core import Backend
 from Backend.extended import Backend2
@@ -26,7 +27,8 @@ from .theme import (
 )
 from Backend.core import local_today
 from .typography import apply_typography
-from .glass import glass_background
+from .glass import GlassHost, glass_background
+from .wallpaper import WallpaperManager
 
 
 
@@ -68,6 +70,8 @@ class Front(NotesMixin):
             self.button_bg_mode,
             self.button_custom_color,
         )
+        self.wallpaper = WallpaperManager(self.page)
+        self.page._nd_wallpaper = self.wallpaper
         self._apply_page_theme()
 
         # Все вспомогательные классы создают свои Fr_Libs в __init__.
@@ -100,6 +104,8 @@ class Front(NotesMixin):
             on_font_change=self.apply_font_settings,
             on_effect_change=self.apply_theme_effect,
             on_layout_change=self.apply_layout_settings,
+            on_wallpaper_change=self.apply_wallpaper_settings,
+            on_dialog_animations_change=self.apply_dialog_animation_settings,
             icon_pack=self.icon_pack,
             button_color=self.button_color,
         )
@@ -123,7 +129,7 @@ class Front(NotesMixin):
             data_provider=self.back._load,
         )
 
-        self.back.on_data_change = self.notification_service.data_changed
+        self.back.on_data_change = self._on_data_change
 
         """Фоновое автообновление дел из облака раз в 10 минут"""
         self.auto_update_service = AutoUpdateService(
@@ -135,8 +141,12 @@ class Front(NotesMixin):
         def _on_close(e=None):
             self.notification_service.stop()
             self.auto_update_service.stop()
+            self.wallpaper.stop()
 
         self.page.on_close = _on_close
+        self.page.on_app_lifecycle_state_change = self.wallpaper.on_lifecycle
+        self.page.on_disconnect = self.wallpaper.on_disconnect
+        self.page.on_connect = self.wallpaper.on_connect
         """Базовые настройки страницы"""
         self.page.title = "Дневник"
         self.page.padding = 0
@@ -186,6 +196,12 @@ class Front(NotesMixin):
         if not self.web:
             self.page.update()
 
+    def _on_data_change(self):
+        # Invalidate even when Undo restores the same records as the last
+        # render: controls may already reflect the intervening local action.
+        self._task_render_signature = None
+        self.notification_service.data_changed()
+
     def _start_unlocked_app(self):
         self.notification_service.setup()
         self.notification_service.start()
@@ -194,6 +210,7 @@ class Front(NotesMixin):
 
     def _reset_root_view(self):
         """Сохраняет корневой View, к которому Flet привязывает сервисы."""
+        self.wallpaper.clear_view(self.root_view)
         self.root_view.route = "/"
         self.root_view.padding = self.page_edge_padding
         self.root_view.bgcolor = ft.Colors.TRANSPARENT if self.libs.glass else self.BgColor
@@ -204,10 +221,11 @@ class Front(NotesMixin):
         if self.web:
             self.screen_host = self.libs.host(
                 expand=True,
-                gradient=glass_background(self.theme) if self.libs.glass else None,
+                gradient=glass_background(self.theme) if self.libs.glass and not self.wallpaper.enabled else None,
                 border_radius=20 if self.libs.glass else None,
             )
             self.root_view.controls = [self.screen_host]
+            self.wallpaper.wrap_view(self.root_view)
         else:
             self.root_view.controls = []
         self.page.views[:] = [self.root_view]
@@ -261,7 +279,9 @@ class Front(NotesMixin):
             self._set_screen(body, reset=True)
         else:
             self.root_view.route = "/unlock"
+            self.wallpaper.clear_view(self.root_view)
             self.root_view.controls = [body]
+            self.wallpaper.wrap_view(self.root_view)
             self.page.views[:] = [self.root_view]
             self.page.update()
 
@@ -285,7 +305,12 @@ class Front(NotesMixin):
         )
         self.page.theme = flet_theme
         self.page.dark_theme = flet_theme
+        self.apply_dialog_animation_settings(update=False)
         self.page.bgcolor = self.BgColor
+        self.wallpaper.configure(
+            settings["animated_wallpaper"], settings["wallpaper_intensity"],
+            self.colors["ProgressColor"], self.theme.endswith("dark"),
+        )
 
     def apply_theme_style(self, theme_style, platform_brightness=None):
         """Сразу перестраивает интерфейс, не перезапуская фоновые сервисы."""
@@ -333,6 +358,8 @@ class Front(NotesMixin):
             on_font_change=self.apply_font_settings,
             on_effect_change=self.apply_theme_effect,
             on_layout_change=self.apply_layout_settings,
+            on_wallpaper_change=self.apply_wallpaper_settings,
+            on_dialog_animations_change=self.apply_dialog_animation_settings,
             icon_pack=self.icon_pack,
             button_color=self.button_color,
         )
@@ -398,6 +425,35 @@ class Front(NotesMixin):
         """Apply the material immediately and keep customization open."""
         self._refresh_customization()
 
+    def apply_wallpaper_settings(self, intensity=None):
+        """Change the wallpaper without rebuilding the current screen."""
+        if intensity is not None:
+            # Dragging must not read settings, rebuild particles or patch the page.
+            self.wallpaper.set_intensity(intensity)
+            return
+        settings = self.back2.read_settings()
+        self.wallpaper.configure(
+            settings["animated_wallpaper"],
+            settings["wallpaper_intensity"],
+            self.colors["ProgressColor"], self.theme.endswith("dark"),
+        )
+        if self.screen_host is not None:
+            self.screen_host.gradient = (
+                glass_background(self.theme) if self.libs.glass and not self.wallpaper.enabled else None
+            )
+        self.page.update()
+
+    def apply_dialog_animation_settings(self, *, update=True):
+        enabled = self.back2.read_settings()["dialog_animations"]
+        for theme in (self.page.theme, self.page.dark_theme):
+            theme.page_transitions = ft.PageTransitionsTheme() if enabled else ft.PageTransitionsTheme(
+                android=ft.PageTransitionTheme.NONE, ios=ft.PageTransitionTheme.NONE,
+                windows=ft.PageTransitionTheme.NONE, macos=ft.PageTransitionTheme.NONE,
+                linux=ft.PageTransitionTheme.NONE,
+            )
+        if update:
+            self.page.update()
+
     def apply_layout_settings(self):
         """Rebuild both panels and keep the current group and customization open."""
         self._refresh_customization()
@@ -419,10 +475,7 @@ class Front(NotesMixin):
     def add_main_widgets(self):
         """Добавляет созданные в ``Frontend.main`` виджеты на главную страницу."""
         floating = self.phone and self.libs.glass_mobile and self.action_panel_position == "bottom"
-        if floating:
-            if self.libs.glass:
-                self.libs.style_glass_add_button(self.button_add_task, large=True)
-        else:
+        if not floating:
             self.add_input(self.button_add_task)
         self.add_input(self.settings)
         self.add_input(self.auth_btn)
@@ -456,7 +509,8 @@ class Front(NotesMixin):
         if floating:
             body = ft.Column([
                 self.task_overview,
-                self.libs.build_glass_body(self.tasks_cont, self.button_add_task, self.btns_cont),
+                self.libs.build_glass_body(
+                    self.tasks_cont, self.button_add_task, self.btns_cont, toolbar_actions=actions),
             ], expand=True, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
         else:
             self.libs.configure_action_panel(
@@ -942,21 +996,25 @@ class Front(NotesMixin):
         self.close_page()
 
     def _update_control(self, control):
-        """На сайте обновляет один control, на нативных клиентах — как раньше."""
-        self.libs.prepare(control)
-        if self.web:
+        """Patch the changed subtree in both web and native clients."""
+        if not isinstance(control, GlassHost):
+            self.libs.prepare(control)
+        try:
             control.update()
-        else:
+        except RuntimeError:
+            if self.web:
+                raise
             self.page.update()
+        ft.context.disable_auto_update()
 
     def _update_screen_host(self):
         """Отправляет только изменение содержимого корневого экрана."""
-        self.libs.prepare(self.screen_host)
         try:
             self.screen_host.update()
         except RuntimeError:
             # Во время начальной сборки host ещё не примонтирован.
             self.page.update()
+        ft.context.disable_auto_update()
 
     def _set_screen(self, body, *, push=False, reset=False):
         """Переключает экран без маршрутов и лишних полных page.update()."""
@@ -982,10 +1040,11 @@ class Front(NotesMixin):
                 if self.page.views[-1].route == "/groups":
                     self.show_groups()
                     return
-                if self.page.views[-1].controls == [self._groups_screen]:
+                if self.wallpaper.view_controls(self.page.views[-1]) == [self._groups_screen]:
                     self._refresh_group_management()
                 asyncio.create_task(self.page.push_route(self.page.views[-1].route))
             self.page.update()
+            ft.context.disable_auto_update()
             return
         if len(self.screen_stack) <= 1:
             return
@@ -1170,6 +1229,7 @@ class Front(NotesMixin):
             )
             asyncio.create_task(self.page.push_route(path))
             self.page.update()
+            ft.context.disable_auto_update()
         return body
 
     def _validate_text_length(self, entry, text=None):
@@ -1282,7 +1342,7 @@ class Front(NotesMixin):
                 if row_widget in self.tasks_cont.content.controls:
                     self.tasks_cont.content.controls.remove(row_widget)
                 self.apply_search_filter(self.current_search)
-                self.page.update()
+                self._update_control(self.main_cont)
                 self.cloud.alg_for_redact()
 
             def redact_task(e, id_task, row_widget):
@@ -1369,7 +1429,7 @@ class Front(NotesMixin):
                     if self.current_status_sort:
                         self._reorder_task_cards()
                     self._refresh_task_overview()
-                    self.page.update()
+                    self._update_control(self.main_cont)
 
                 checkbox.on_change = save_status_and_refresh
                 task_widgets[1].on_click = lambda e, i=id_, r=task_row: self.page.run_task(
@@ -1478,15 +1538,13 @@ class Front(NotesMixin):
         """Кастомизация"""
         customization = dialogs["customization"]
         customization["button"].on_click = lambda e: self.open_modified_dialog2(
-            customization["header"],
-            customization["content"],
-            customization["back"],
+            *customization["build"](),
         )
 
         """Уведомления"""
         notifications = dialogs["notifications"]
         notifications["button"].on_click = lambda e: self.open_modified_dialog2(
-            notifications["header"], notifications["content"], notifications["back"]
+            *notifications["build"](),
         )
 
         """Примечания"""
@@ -2134,6 +2192,28 @@ class Front(NotesMixin):
         group_settings = self.back.get_group_settings(None if all_tasks else self.current_group_id)
         self.show_completion_counter = group_settings["show_completion_counter"]
         self.task_heading.visible = group_settings["show_group_title"]
+        if self._notes_group:
+            records = self.back.read_notes(self.current_group_id)
+        else:
+            self.back.migrate_groups_storage()
+            records = [task for task in self.back.read_tasks()
+                       if self._task_group_is_visible(task.get("group", "default"))]
+        # Returning from a dialog should retain mounted cards and scroll state
+        # when the data, presentation settings and deadline colors are current.
+        signature = (id(self.tasks_cont), self.current_group_id, self.current_sort,
+                     self.current_status_sort, group_settings, groups, records,
+                     local_today(self.web, self.page))
+        self.task_heading.value = next(
+            (g["name"] for g in groups if g["id"] == self.current_group_id),
+            "Все дела" if all_tasks else "Мои дела",
+        )
+        controls = self.tasks_cont.content.controls
+        structure = (id(self.tasks_cont.content), id(controls), tuple(id(c) for c in controls))
+        if (signature == getattr(self, "_task_render_signature", None)
+                and structure == getattr(self, "_task_render_structure", None)):
+            self.apply_search_filter(self.current_search)
+            self._refresh_group_tabs(groups)
+            return
         base = []
         if self.phone:
             base.append(self.search_row_widget)
@@ -2141,15 +2221,16 @@ class Front(NotesMixin):
 
         # Все дела строятся одним списком и разделяются по дате создания.
         if self._notes_group:
-            self._render_notes(group_settings)
+            self._render_notes(group_settings, notes=records)
         else:
-            self.before_load(group_settings, groups=groups)
-        self.task_heading.value = next(
-            (g["name"] for g in groups if g["id"] == self.current_group_id),
-            "Все дела" if all_tasks else "Мои дела",
-        )
+            self.before_load(group_settings, groups=groups, tasks=records)
+        self._task_render_signature = signature
         self.apply_search_filter(self.current_search)
         self._refresh_group_tabs(groups)
+        controls = self.tasks_cont.content.controls
+        self._task_render_structure = (
+            id(self.tasks_cont.content), id(controls), tuple(id(c) for c in controls),
+        )
 
     def check_and_add_postponed_task(self):
         """Добавляет отложенные дела в основной список, когда наступила их дата."""
@@ -2165,16 +2246,18 @@ class Front(NotesMixin):
             self.back.delete_empty_lines()
         return bool(tasks)
 
-    def before_load(self, group_settings=None, *, groups=None):
+    def before_load(self, group_settings=None, *, groups=None, tasks=None):
         """Загружает дела выбранной группы или общий список.
 
         Если включена настройка "Разделять дела по датам", дела, созданные
         в один день, отображаются подряд, а между делами с разными датами
         создания вставляется обычный Divider. Если настройка выключена,
         дела отображаются одним списком без разделителей."""
-        self.back.migrate_groups_storage()
+        if tasks is None:
+            self.back.migrate_groups_storage()
+            tasks = self.back.read_tasks()
         tasks = self._sort_tasks(
-            task for task in self.back.read_tasks()
+            task for task in tasks
             if self._task_group_is_visible(task.get("group", "default"))
         )
         if group_settings is None:
@@ -2223,10 +2306,13 @@ class Front(NotesMixin):
             self._set_screen(self.main_cont, reset=True)
             return
         self.root_view.route = "/groups"
+        self.wallpaper.clear_view(self.root_view)
         self.root_view.controls = [self.main_cont]
+        self.wallpaper.wrap_view(self.root_view)
         self.page.views[:] = [self.root_view]
         asyncio.create_task(self.page.push_route("/groups"))
         self.page.update()
+        ft.context.disable_auto_update()
 
     def _ensure_current_group(self, groups=None):
         groups = self.back.get_groups() if groups is None else groups
@@ -2302,7 +2388,7 @@ class Front(NotesMixin):
             return
 
         if self._groups_screen is None:
-            self._groups_column = ft.ListView(
+            self._groups_column = LazyListView(
                 scroll=ft.ScrollMode.AUTO, spacing=10, expand=True,
                 build_controls_on_demand=True)
             header = self.libs.create_style_header("Управление группами")
@@ -2318,6 +2404,7 @@ class Front(NotesMixin):
             ))
             asyncio.create_task(self.page.push_route(self.page.views[-1].route))
             self.page.update()
+            ft.context.disable_auto_update()
 
     def _refresh_group_management(self):
         if self._groups_column is None:
@@ -2392,10 +2479,11 @@ class Front(NotesMixin):
         create.on_click = self._open_create_group
         floating = self.phone and self.libs.glass_mobile and self.action_panel_position == "bottom"
         if self.libs.glass_mobile or self.action_panel_position in {"left", "right"}:
-            create = self.libs.build_button_with_image("plusS", "Новая группа", compact=False)
+            create = self.libs.build_button_with_image(
+                "plusS", "Новая группа", size=30 if self.phone else 42, compact=False)
             create.on_click = self._open_create_group
             create.width = create.height = 56
-            if self.libs.glass:
+            if self.phone and self.libs.glass:
                 self.libs.style_glass_add_button(create)
             self.groups_add_btn = create
         back = self.libs.build_button_with_image("nazad", "Назад к делам", compact=False)
@@ -2410,6 +2498,9 @@ class Front(NotesMixin):
                 self.groups_undo_btn = button
                 button.disabled = not self.back.can_undo()
             controls.append(button)
+        if not self.phone and self.action_panel_position in {"left", "right"}:
+            for button in controls:
+                button.width = button.height = 56
         return ft.Row(
             controls,
             spacing=6,
@@ -2675,7 +2766,7 @@ class Front(NotesMixin):
                 on_complete()
             else:
                 try:
-                    self._update_control(self.tasks_cont)
+                    self._update_control(self.main_cont)
                 except RuntimeError:
                     self.page.update()
             
@@ -2691,7 +2782,7 @@ class Front(NotesMixin):
         if self.web:
             if not self.screen_stack or self.screen_stack[-1] is not self.main_cont:
                 return
-        elif not self.page.views or self.page.views[-1].controls != [self.main_cont]:
+        elif not self.page.views or self.wallpaper.view_controls(self.page.views[-1]) != [self.main_cont]:
             return
 
         base = []

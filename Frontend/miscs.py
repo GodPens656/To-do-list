@@ -1,5 +1,6 @@
 import asyncio
 import flet as ft
+from .controls import SurfaceHost
 from datetime import datetime
 from .theme import get_theme_colors
 from .libs import Fr_Libs
@@ -195,7 +196,7 @@ class Utils:
                 attachment_controls(self.libs, attachments),
             ], spacing=3 if self.phone else 6, tight=True, expand=True)
             row_controls = [*([checkbox] if checkbox is not None else []), body]
-        row_with_task = ft.Container(
+        row_with_task = SurfaceHost(
             content=ft.Row(
                 controls=row_controls,
                 spacing=4 if self.phone else 10,

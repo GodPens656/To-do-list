@@ -67,7 +67,8 @@ class TaskRenderingTests(unittest.TestCase):
                     self.toggle(original['2'])
                 build.assert_not_called()
                 self.assertEqual(saves.call_count, 1)
-                front.page.update.assert_called_once()
+                front.page.update.assert_not_called()
+                front._update_control.assert_called_once_with(front.main_cont)
                 self.assertTrue(front.back.get_task('2')['status'])
                 expected = [t['id'] for t in front._sort_tasks(front.back.read_tasks())]
                 self.assertEqual([c.key for c in self.cards(front)], expected)

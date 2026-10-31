@@ -238,7 +238,10 @@ def attachment_controls(libs, attachments, on_remove=None):
             ))
         name = ft.Text(attachment.get("name", "Файл"), no_wrap=False,
                        size=libs.text_size(13), color=libs.TxtColor)
-        actions = ft.Row(buttons, spacing=0, tight=True)
+        actions = ft.Row(
+            buttons, spacing=10 if not libs.phone and (libs.glass or libs.glass_toolbar) else 0,
+            tight=True,
+        )
         if libs.phone:
             name.expand = True
             rows.append(ft.Row([name, actions], spacing=4))

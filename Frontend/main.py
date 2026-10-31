@@ -6,6 +6,7 @@ entry point without duplicating that state.
 """
 
 import flet as ft
+from .controls import LazyListView
 
 from Backend.core import local_today
 from .info import Utils3
@@ -62,10 +63,8 @@ class MainWidgets(Utils3):
             self.open_page(cont_H, cont_AC, self.cancel, "new-task")
 
         self.button_add_task= self.libs.build_button_with_image(
-            'plusS', 'Добавить новое дело', size=56 if self.phone else 48, compact=False
+            'plusS', 'Добавить новое дело', size=48, compact=False
         )
-        if self.phone:
-            self.button_add_task.width = self.button_add_task.height = 72
 
         self.settings = self.libs.build_button_with_image(
             'settings', 'Настройки', size=48, compact=False
@@ -347,9 +346,11 @@ class MainWidgets(Utils3):
         )
 
         self.tasks_cont = self.libs.host(
-            content=ft.ListView(
+            content=LazyListView(
                 [spacer], spacing=8, scroll=ft.ScrollMode.AUTO,
                 build_controls_on_demand=True, expand=True,
+                # Keep Android's automatic system inset out of the task panel.
+                padding=0 if self.phone else None,
             ),
             bgcolor=self.ContBgColor,
             border=ft.Border.all(1, self.colors["SoftBorderColor"]),
@@ -383,6 +384,8 @@ class MainWidgets(Utils3):
 
         if self.phone:
             self.main_cont = self.libs.host(
+                # Applies above the tabs or the task body, whichever is first.
+                padding=ft.Padding.only(top=self.libs.height_for_dlg_spacer),
                 content=ft.Column(
                     controls=leading_controls + [
                         overview,

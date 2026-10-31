@@ -3,13 +3,17 @@ from .theme import get_theme_colors
 from .glass import (
     GlassHost, apply_glass, glass_background, glass_surface, is_glass, is_toolbar_glass,
 )
+from .controls import ActionButton, ActionIconButton, SurfaceHost
 from .typography import scaled_text_size
+from .wallpaper import WallpaperManager
 from Backend.core import Backend
 from Backend.validation import MAX_TEXT_LENGTH
 
 
 class Fr_Libs:
     SVG_ICON_PACKS = {"minimalistic", "minimalistic-blue"}
+    MOBILE_TOOLBAR_ICON_SIZE = 26
+    MOBILE_TOOLBAR_BUTTON_HEIGHT = 62
 
     FLET_ICON_PACK = {
         "auth": ft.Icons.PERSON_ROUNDED,
@@ -110,7 +114,7 @@ class Fr_Libs:
     def host(self, **kwargs):
         if self.glass or self.glass_toolbar:
             return GlassHost(self.theme, self.colors, mobile=self.glass_mobile, **kwargs)
-        return ft.Container(**kwargs)
+        return SurfaceHost(**kwargs)
 
     def prepare(self, control):
         return apply_glass(control, self.theme, self.colors, mobile=self.glass_mobile)
@@ -120,6 +124,9 @@ class Fr_Libs:
         if self.glass:
             view.decoration = ft.BoxDecoration(gradient=glass_background(self.theme))
             view.bgcolor = ft.Colors.TRANSPARENT
+        wallpaper = getattr(self.page, "_nd_wallpaper", None)
+        if isinstance(wallpaper, WallpaperManager):
+            wallpaper.wrap_view(view)
         return view
 
     def open_dialog(self, title, content, page):
@@ -130,7 +137,7 @@ class Fr_Libs:
         def close_dialog(e=None):
             page.pop_dialog()
 
-        ok = ft.Button(
+        ok = ActionButton(
             "OK",
             on_click=close_dialog,
             style=ft.ButtonStyle(
@@ -274,7 +281,7 @@ class Fr_Libs:
         )
         self.year_date_button.visible = False
 
-        self.btn_create_task = ft.Button(
+        self.btn_create_task = ActionButton(
             f"{text_for_button}",
             bgcolor=self.BtnColor,
             style=ft.ButtonStyle(
@@ -285,7 +292,7 @@ class Fr_Libs:
             align=ft.Alignment.BOTTOM_CENTER,
         )
 
-        self.cancel = ft.Button(
+        self.cancel = ActionButton(
             "Отмена",
             bgcolor=self.BtnColor,
             style=ft.ButtonStyle(
@@ -413,7 +420,7 @@ class Fr_Libs:
             icon_path = f"/{relative_path}" if self.web else relative_path
             content = ft.Image(src=icon_path, width=size, height=size)
 
-        return ft.Button(
+        return ActionButton(
             # assets_dir уже указывает на папку assets, поэтому путь
             # задаётся относительно неё.
             content=content,
@@ -443,9 +450,9 @@ class Fr_Libs:
             button._nd_glass_toolbar_action = True
             icon = button.content
             if isinstance(icon, ft.Icon):
-                icon.size = 26
+                icon.size = self.MOBILE_TOOLBAR_ICON_SIZE
             elif isinstance(icon, ft.Image):
-                icon.width = icon.height = 26
+                icon.width = icon.height = self.MOBILE_TOOLBAR_ICON_SIZE
             button.content = ft.Column([
                 icon,
                 ft.Text(label, size=self.text_size(11), color=self.TxtColor,
@@ -455,7 +462,7 @@ class Fr_Libs:
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER)
             button.expand = True
             button.width = None
-            button.height = 62
+            button.height = self.MOBILE_TOOLBAR_BUTTON_HEIGHT
             button.bgcolor = ft.Colors.TRANSPARENT
             button.elevation = 0
             button.style = ft.ButtonStyle(
@@ -524,7 +531,8 @@ class Fr_Libs:
         container._nd_glass_toolbar = True
         glass_surface(container, self.theme, radius=40, mobile=self.glass_mobile, backdrop=True)
 
-    def build_glass_body(self, list_container, add_button, toolbar, *, scrollable=None):
+    def build_glass_body(self, list_container, add_button, toolbar, *, scrollable=None,
+                         toolbar_actions=None):
         """Плавающие кнопки поверх списка, прокручиваемого до нижнего края."""
         if self.glass:
             list_container.bgcolor = None
@@ -540,29 +548,42 @@ class Fr_Libs:
         # menu and the last item can still be scrolled clear of both buttons.
         scrollable = scrollable if scrollable is not None else list_container.content
         scrollable.padding = ft.Padding.only(bottom=200)
+        floating_add = ft.Container(content=add_button, right=18, bottom=108)
+        if toolbar_actions is not None:
+            self.style_glass_add_button(add_button, match_toolbar=True)
+            # Use the toolbar's exact columns and horizontal insets so the
+            # floating action stays the same size at any viewport width.
+            floating_add = ft.Container(
+                content=ft.Row([
+                    *[ft.Container(expand=True) for _ in toolbar_actions.controls[:-1]],
+                    add_button,
+                ], spacing=toolbar_actions.spacing, height=add_button.height),
+                left=10, right=10, bottom=108,
+                padding=ft.Padding.symmetric(horizontal=toolbar.padding + toolbar.border.left.width),
+                margin=toolbar.margin,
+            )
         return self.host(
             content=ft.Stack([
                 list_container,
-                ft.Container(
-                    content=add_button, right=18, bottom=108,
-                ),
+                floating_add,
                 ft.Container(content=toolbar, left=10, right=10, bottom=16),
             ], fit=ft.StackFit.EXPAND),
             expand=True,
         )
 
-    def style_glass_add_button(self, button, *, large=False):
+    def style_glass_add_button(self, button, *, large=False, match_toolbar=False):
         """Отдельная кнопка создания справа над стеклянной панелью."""
         icon = button.content
-        icon_size = 42 if large else 30
+        icon_size = self.MOBILE_TOOLBAR_ICON_SIZE if match_toolbar else (42 if large else 30)
         if isinstance(icon, ft.Icon):
             icon.size = icon_size
         elif isinstance(icon, ft.Image):
             icon.width = icon.height = icon_size
-        button.width = button.height = 72 if large else 56
+        button.width = None if match_toolbar else (72 if large else 56)
+        button.height = self.MOBILE_TOOLBAR_BUTTON_HEIGHT if match_toolbar else button.width
         button.elevation = 3
-        button.expand = None
-        button.margin = ft.Margin.only(right=8)
+        button.expand = True if match_toolbar else None
+        button.margin = None if match_toolbar else ft.Margin.only(right=8)
         button.style = ft.ButtonStyle(
             shape=ft.RoundedRectangleBorder(radius=24 if large else 19), padding=10,
             elevation=3, shadow_color=ft.Colors.with_opacity(0.18, ft.Colors.BLACK),
@@ -598,7 +619,7 @@ class Fr_Libs:
 
     def create_style_button(self, text, icon=None):
         """Создает кнопку со стилем, стандартным для приложения"""
-        btn = ft.Button(
+        btn = ActionButton(
             f"{text}",
             bgcolor=self.BtnColor,
             style=ft.ButtonStyle(
@@ -616,7 +637,7 @@ class Fr_Libs:
         return btn
 
     def create_edit_button(self):
-        return ft.IconButton(
+        return ActionIconButton(
                 tooltip="Редактировать дело",
                 icon=ft.Icons.EDIT_ROUNDED,
                 icon_color=self.FletIconColor,
@@ -629,7 +650,7 @@ class Fr_Libs:
             )
 
     def create_delete_button(self):
-        return ft.IconButton(
+        return ActionIconButton(
                 tooltip="Удалить дело",
                 icon=ft.Icons.DELETE_ROUNDED,
                 icon_color=self.FletIconColor,
@@ -671,7 +692,7 @@ class Fr_Libs:
     def create_style_category_button(self, icon, text: str):
         """Кнопка-категория для главного окна настроек.
         Открывает отдельный диалог с настройками выбранной темы."""
-        return ft.Button(
+        return ActionButton(
             content=ft.Row(
                 [
                     ft.Icon(icon, color=self.FletIconColor, size=20),

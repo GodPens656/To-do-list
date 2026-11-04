@@ -1,6 +1,8 @@
 # Versions from the project's working Python 3.13 environment.
 flet[desktop,web]==0.82.0
 flet-color-pickers==0.82.0
+# Flet 0.82.0 passes openapi_prefix, removed in FastAPI 0.145.
+fastapi>=0.115.12,<0.145
 dropbox==12.0.2
 cryptography==48.0.0
 Pillow==11.3.0

@@ -11,6 +11,8 @@ from .json_migration import migrate_legacy_storage
 from .validation import text_length_error
 from .attachments import validate_account_quota
 from .achievements import achievement_summary, update_completion_history
+from .data_archive import create_data_archive, read_data_archive
+from .storage import replace_all_sections
 
 
 DEFAULT_WEB_TIMEZONE = "Europe/Moscow"
@@ -118,6 +120,22 @@ class Backend:
     def is_authenticated(self):
         cloud = getattr(self, "cloud", None)
         return cloud is not None and cloud.check_user_data() is True
+
+    def export_data_archive(self):
+        return create_data_archive(self._load())
+
+    def import_data_archive(self, content):
+        data = read_data_archive(content)
+        if self.is_authenticated():
+            validate_account_quota(self._load(), data)
+        if self.web:
+            self.store.save_all_sections(data)
+        else:
+            replace_all_sections(self.data_dir, data)
+        self.clear_undo()
+        callback = getattr(self, "on_data_change", None)
+        if callback:
+            callback()
 
     def validate_attachment_selection(self, attachments, task_id=None, section="tasks", *, group_id=None):
         if not self.is_authenticated():

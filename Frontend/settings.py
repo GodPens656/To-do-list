@@ -2,7 +2,8 @@ import asyncio
 
 import flet as ft
 from .controls import LazyListView
-from .attachments import attachment_controls
+from .attachments import attachment_controls, file_picker
+from Backend.data_archive import MAX_ARCHIVE_BYTES, read_data_archive
 from flet_color_pickers import ColorLabelType, ColorPicker, PaletteType
 from datetime import datetime
 from pathlib import Path
@@ -513,9 +514,115 @@ class Utils2:
         return ft.Container(
             content=ft.Column([
                 btn_del_all, btn_del_uncomp, btn_del_comp,
-                only_current_group, btn_backup, backup_status,
+                only_current_group,
+                *self.build_widgets_for_data_archive(cmd_rebuild_widgets),
+                btn_backup, backup_status,
             ])
         )
+
+    def build_widgets_for_data_archive(self, cmd_rebuild_widgets):
+        import_button = self.libs.create_style_button("Импорт данных", ft.Icons.UPLOAD_FILE_ROUNDED)
+        export_button = self.libs.create_style_button("Экспорт данных", ft.Icons.DOWNLOAD_ROUNDED)
+        status = ft.Text("Архив содержит все группы, дела, заметки, вложения и достижения.",
+                         color=self.TxtColor, size=self.libs.text_size(12))
+
+        def busy(value):
+            import_button.disabled = export_button.disabled = value
+            self.back.page.update()
+
+        async def export_data(_):
+            if export_button.disabled:
+                return
+            busy(True)
+            status.value = "Подготовка архива…"
+            try:
+                content = await asyncio.to_thread(self.back.export_data_archive)
+                page = self.back.page
+                path = await file_picker(page).save_file(
+                    dialog_title="Экспорт данных",
+                    file_name=f"dela_{datetime.now():%Y-%m-%d_%H-%M-%S}.zip",
+                    file_type=ft.FilePickerFileType.CUSTOM,
+                    allowed_extensions=["zip"], src_bytes=content,
+                )
+                if path and not page.web and not page.platform.is_mobile():
+                    await asyncio.to_thread(Path(path).write_bytes, content)
+                status.value = "Архив передан для сохранения." if path or page.web or page.platform.is_mobile() else "Экспорт отменён."
+            except (OSError, ValueError, RuntimeError, NotImplementedError):
+                status.value = "Не удалось экспортировать данные. Попробуйте ещё раз."
+            finally:
+                busy(False)
+
+        async def import_data(_):
+            if import_button.disabled:
+                return
+            busy(True)
+            page = self.back.page
+            try:
+                account = self.cloud.read_user_data_text()
+                selected = await file_picker(page).pick_files(
+                    dialog_title="Импорт данных", file_type=ft.FilePickerFileType.CUSTOM,
+                    allowed_extensions=["zip"], allow_multiple=False, with_data=True,
+                )
+                if not selected:
+                    return
+                item = selected[0]
+                if item.size and item.size > MAX_ARCHIVE_BYTES:
+                    raise ValueError("Размер архива превышает 256 МБ.")
+                content = item.bytes
+                if not page.web and item.path:
+                    def read_selected():
+                        with Path(item.path).open("rb") as source:
+                            return source.read(MAX_ARCHIVE_BYTES + 1)
+                    content = await asyncio.to_thread(read_selected)
+                await asyncio.to_thread(read_data_archive, content)
+                decision = asyncio.get_running_loop().create_future()
+
+                def decide(value):
+                    if not decision.done():
+                        decision.set_result(value)
+                    page.pop_dialog()
+
+                async def confirm(_):
+                    decide(True)
+
+                async def cancel(_):
+                    decide(False)
+
+                async def dismiss(_):
+                    if not decision.done():
+                        decision.set_result(False)
+
+                dialog = ft.AlertDialog(
+                    modal=True, title=ft.Text("Заменить данные?"),
+                    content=ft.Text("Все текущие группы, дела, заметки, вложения и достижения "
+                                    "будут заменены данными из архива. Действие нельзя отменить. "
+                                    "При необходимости сначала экспортируйте текущие данные."),
+                    actions=[ft.TextButton("Отмена", on_click=cancel),
+                             ft.TextButton("Заменить данные", on_click=confirm)],
+                    on_dismiss=dismiss,
+                )
+                page.show_dialog(self.libs.prepare(dialog))
+                if not await decision:
+                    status.value = "Импорт отменён."
+                    return
+                if self.cloud.read_user_data_text() != account:
+                    status.value = "Аккаунт изменился. Повторите импорт."
+                    return
+                await asyncio.to_thread(self.back.import_data_archive, content)
+                status.value = "Данные импортированы. Текущие дела заменены данными из архива."
+                if cmd_rebuild_widgets is not None:
+                    cmd_rebuild_widgets()
+                self.cloud.alg_for_redact()
+            except ValueError as error:
+                status.value = f"Не удалось импортировать данные: {error}"
+            except (OSError, RuntimeError, NotImplementedError):
+                status.value = "Не удалось импортировать данные. Попробуйте ещё раз."
+            finally:
+                busy(False)
+
+        import_button.on_click = import_data
+        export_button.on_click = export_data
+        return [import_button, export_button, status]
 
     def build_dialog_notifications(
         self,

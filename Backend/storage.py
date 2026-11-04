@@ -177,6 +177,25 @@ def save_all_sections(data_dir, data, force=False):
         return _save_all_sections(data_dir, data, force)
 
 
+def replace_all_sections(data_dir, data):
+    """Replace a snapshot under the sync lock; roll back a failed disk write."""
+    directory = Path(data_dir)
+    with STORAGE_LOCK:
+        originals = {
+            directory / name: (directory / name).read_bytes() if (directory / name).exists() else None
+            for name in SECTION_FILENAMES.values()
+        }
+        try:
+            save_all_sections(directory, data, force=True)
+        except Exception:
+            for path, raw in originals.items():
+                if raw is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    write_bytes(path, raw, encrypt=False)
+            raise
+
+
 def _save_all_sections(data_dir, data, force=False):
     changed = set()
     for key in SECTION_FILENAMES:

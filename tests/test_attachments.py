@@ -20,7 +20,7 @@ from Backend.crypto import is_encrypted
 from Backend.storage import set_data_encryption
 from Backend.webstorage import WebSessionStore
 from Frontend.attachments import AttachmentEditor, attachment_controls
-from test_ui_state import make_front
+from test_ui_state import make_front, task_menu
 
 
 def image_file():
@@ -139,7 +139,7 @@ class AttachmentTests(unittest.TestCase):
                     self.assertEqual(len(front.back.read_tasks()), 1)
                     self.assertEqual(front.back2.read_repeat_tasks(), [])
                     self.assertEqual(front.back2.read_postponed_tasks(), [])
-                    self.assertEqual(front.page.show_dialog.call_args.args[0].title.value, " Лимит вложений")
+                    self.assertEqual(front.page.show_dialog.call_args.args[0].title.value, "Лимит вложений")
                     self.assertEqual(len(editor.values()), 1)
 
     def test_binary_roundtrip_and_image_detection_use_content(self):
@@ -196,9 +196,7 @@ class AttachmentTests(unittest.TestCase):
 
                 def edit():
                     card = next(c for c in front.tasks_cont.content.controls if c.key == task["id"])
-                    actions = (card.content.controls[-1].controls[0].controls[-1].content
-                               if phone else card.content.controls[0].content)
-                    actions.controls[0].on_click(None)
+                    task_menu(card).items[0].on_click(None)
                     return editor_on_screen(front)
 
                 edit_controls = edit()
@@ -221,7 +219,7 @@ class AttachmentTests(unittest.TestCase):
         document = make_attachment("report.pdf", b"document")
         controls = attachment_controls(front.libs, [image, document])
         self.assertEqual(len(controls.controls[0].controls[-1].controls), 3)
-        self.assertEqual(len(controls.controls[1].controls[-1].controls), 1)
+        self.assertEqual(len(controls.controls[1].controls[-1].controls), 2)
         controls.controls[0].controls[-1].controls[0].on_click(None)
         dialog = front.page.show_dialog.call_args.args[0]
         viewer = dialog.content.content.controls[0]

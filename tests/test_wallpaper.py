@@ -25,7 +25,9 @@ class WallpaperTests(unittest.TestCase):
             back.web = False
             back.settings = Path(directory) / "settings.txt"
             back.set_default_settings()
-            self.assertEqual(back.read_settings()["animated_wallpaper"], "none")
+            self.assertEqual(back.read_settings()["theme_style"], "chatgpt")
+            self.assertEqual(back.read_settings()["theme_effect"], "liquid_glass_half")
+            self.assertEqual(back.read_settings()["animated_wallpaper"], "waves")
             self.assertEqual(back.read_settings()["wallpaper_intensity"], 60)
             for mode, _ in WALLPAPER_OPTIONS:
                 back.redact_setting("animated_wallpaper", mode)

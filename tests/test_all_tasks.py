@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 import flet as ft
 
 from Frontend.main import ALL_TASKS_GROUP_ID
-from test_ui_state import make_front
+from test_ui_state import make_front, task_menu
 
 
 class AllTasksTests(unittest.TestCase):
@@ -95,7 +95,7 @@ class AllTasksTests(unittest.TestCase):
         self.assertTrue(front.back.get_task(second)["status"])
         self.assertFalse(front.back.get_task(first)["status"])
         self.assertEqual([card.key for card in self.cards(front)], [first, second])
-        card.content.controls[0].content.controls[0].on_click(None)
+        task_menu(card).items[0].on_click(None)
         front.libs.entry_task.value = "Изменённое дело"
         front.libs.entry_task.on_submit(None)
         self.assertEqual(front.back.get_task(second)["group"], home)

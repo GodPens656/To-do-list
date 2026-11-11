@@ -29,14 +29,18 @@ from .crypto import (
     decrypt_bytes,
     encrypt_bytes,
     encrypt_file_if_plaintext,
+    file_signature,
     read_text as read_encrypted_text,
     write_text as write_encrypted_text,
 )
 from .shared_groups import SharedGroupsMixin, personal_groups, personal_tasks
+from .timing import timed
 CLOUD_ROOT = "/For_to-do"
 BACKUP_INTERVAL = timedelta(days=7)
 BACKUP_CHECK_SECONDS = 60 * 60
 BACKUP_RETRY_SECONDS = 5 * 60
+BACKUP_MANIFEST = "_backup_manifest.json"
+BACKUP_LEGACY_FILENAMES = ("itog.json", "itog.txt")
 
 
 def _is_content_length_error(exc):
@@ -94,6 +98,9 @@ class Cloud(SharedGroupsMixin):
         self._sync_lock = threading.RLock()
         self._account_encryption = {}
         self._backup_checks = {}
+        # Сохранённый вход читается до первого скачивания. Бэкап в этот
+        # момент занял бы _sync_lock и задержал загрузку приложения.
+        self._backup_checks_enabled = False
         if self.web:
             # Веб-ветка работает с WebSessionStore и BytesIO. Никакие
             # пользовательские файлы в рабочей папке процесса на VPS ей
@@ -312,12 +319,16 @@ class Cloud(SharedGroupsMixin):
             path = self.cloud_path(CLOUD_ROOT, account, "security.json")
             enabled = True  # старые аккаунты всегда шифровались
             if self.disk.exists(path):
-                settings = json.loads(self._download_payload(path, 5))
-                if not isinstance(settings, dict) or type(settings.get("encryption_enabled")) is not bool:
-                    raise ValueError("Некорректная настройка шифрования аккаунта.")
-                enabled = settings["encryption_enabled"]
+                enabled = self._decode_account_encryption(self._download_payload(path, 5))
             self._account_encryption[account] = enabled
             return enabled
+
+    @staticmethod
+    def _decode_account_encryption(payload):
+        settings = json.loads(payload)
+        if not isinstance(settings, dict) or type(settings.get("encryption_enabled")) is not bool:
+            raise ValueError("Некорректная настройка шифрования аккаунта.")
+        return settings["encryption_enabled"]
 
     def set_account_encryption(self, account, enabled):
         """Меняет формат облачных и локальных файлов, сохраняя локальные правки."""
@@ -403,13 +414,15 @@ class Cloud(SharedGroupsMixin):
                     return False
 
             try:
-                self.account_encryption_enabled(login_password, refresh=True)
-                result, legacy = self._download_snapshot(login_password, max_retries)
+                result, legacy, encrypted = self._download_snapshot(login_password, max_retries)
             except Exception as exc:
                 print(f"Ошибка скачивания из облака: {type(exc).__name__}")
                 return False
             if not result:
                 return False
+            if not hasattr(self, "_account_encryption"):
+                self._account_encryption = {}
+            self._account_encryption[login_password] = encrypted
 
             with self.file_lock():
                 if self._local_versions() != before:
@@ -435,31 +448,32 @@ class Cloud(SharedGroupsMixin):
             return True
 
     def _download_snapshot(self, login_password, max_retries):
+        # One listing replaces a metadata round trip for every section and
+        # security.json. Dropbox paths are case-insensitive.
+        filenames = {entry.name.casefold() for entry in self.disk.listdir(
+            self.cloud_path(CLOUD_ROOT, login_password)) if entry.type == "file"}
         paths = {key: self.cloud_path(CLOUD_ROOT, login_password, filename)
-                 for key, filename in SECTION_FILENAMES.items()}
-        with ThreadPoolExecutor(max_workers=len(paths)) as executor:
-            futures = {key: executor.submit(self.disk.exists, path) for key, path in paths.items()}
-            existing = [key for key, future in futures.items() if future.result()]
-            if existing:
-                futures = {key: executor.submit(self._download_payload, paths[key], max_retries)
-                           for key in existing}
-                result = {}
-                for key, future in futures.items():
-                    value = json.loads(decrypt_bytes(future.result()).decode("utf-8"))
-                    if not isinstance(value, list):
-                        raise ValueError("Некорректный формат секции " + key)
-                    result[key] = value
-                # Older accounts have no history yet. An explicit account
-                # switch must not retain the previous account's achievements.
-                result.setdefault("achievements", [])
-                return result, False
+                 for key, filename in SECTION_FILENAMES.items() if filename.casefold() in filenames}
+        legacy = None
+        if not paths:
+            legacy = next((name for name in ("itog.json", "itog.txt") if name in filenames), None)
+            if legacy is None:
+                return {}, False, True
+            paths["legacy"] = self.cloud_path(CLOUD_ROOT, login_password, legacy)
+        if "security.json" in filenames:
+            paths["security"] = self.cloud_path(CLOUD_ROOT, login_password, "security.json")
 
-        for filename in ("itog.json", "itog.txt"):
-            path = self.cloud_path(CLOUD_ROOT, login_password, filename)
-            if not self.disk.exists(path):
-                continue
-            text = decrypt_bytes(self._download_payload(path, max_retries)).decode("utf-8")
-            if filename.endswith(".json"):
+        # Settings and data are independent reads. Fetch them in the same batch,
+        # then validate everything before touching local files.
+        with ThreadPoolExecutor(max_workers=len(paths)) as executor:
+            futures = {key: executor.submit(self._download_payload, path, max_retries)
+                       for key, path in paths.items()}
+            payloads = {key: future.result() for key, future in futures.items()}
+        security = payloads.pop("security", None)
+        encrypted = True if security is None else self._decode_account_encryption(security)
+        if legacy:
+            text = decrypt_bytes(payloads["legacy"]).decode("utf-8")
+            if legacy.endswith(".json"):
                 candidate = json.loads(text)
                 if not isinstance(candidate, dict):
                     raise ValueError("Некорректный формат сохранения")
@@ -472,12 +486,22 @@ class Cloud(SharedGroupsMixin):
                 }
                 if not all(isinstance(value, list) for value in data.values()):
                     raise ValueError("Некорректный формат сохранения")
-                return load_data_from_dict(data), True
+                return load_data_from_dict(data), True, encrypted
             parts = [part.strip().splitlines() for part in text.split("---")]
             while len(parts) < 4:
                 parts.append([])
-            return load_data_from_dict(lines_to_data(*parts[:4])), True
-        return {}, False
+            return load_data_from_dict(lines_to_data(*parts[:4])), True, encrypted
+
+        result = {}
+        for key, payload in payloads.items():
+            value = json.loads(decrypt_bytes(payload).decode("utf-8"))
+            if not isinstance(value, list):
+                raise ValueError("Некорректный формат секции " + key)
+            result[key] = value
+        # Older accounts have no history yet. An explicit account switch must
+        # not retain the previous account's achievements.
+        result.setdefault("achievements", [])
+        return result, False, encrypted
 
     # ------------------------------------------------------------------
     # Выгрузка
@@ -604,6 +628,26 @@ class Cloud(SharedGroupsMixin):
         """Создаёт бэкап не чаще одного раза за календарный день на аккаунт."""
         return self._create_backup(today, timedelta(days=1))
 
+    def _backup_is_complete(self, path):
+        try:
+            filenames = {entry.name.casefold() for entry in self.disk.listdir(path)
+                         if entry.type == "file"}
+            if BACKUP_MANIFEST in filenames:
+                manifest = json.loads(self._download_payload(
+                    self.cloud_path(path, BACKUP_MANIFEST), 1))
+                expected = manifest.get("files") if isinstance(manifest, dict) else None
+                supported = set(SECTION_FILENAMES.values()) | set(BACKUP_LEGACY_FILENAMES)
+                return (isinstance(expected, list) and bool(expected)
+                        and all(isinstance(name, str) and name in supported for name in expected)
+                        and set(expected).issubset(filenames))
+            # До появления достижений полная копия содержала четыре секции.
+            required = {name for key, name in SECTION_FILENAMES.items() if key != "achievements"}
+            return required.issubset(filenames)
+        except (FileNotFoundError, ValueError):
+            # Папку могли удалить с другого устройства; повреждённый список
+            # файлов также не подтверждает полноту резервной копии.
+            return False
+
     def _create_backup(self, today, interval):
         """Копирует облачные секции с проверкой интервала по истории в облаке.
 
@@ -634,17 +678,25 @@ class Cloud(SharedGroupsMixin):
                     continue
                 if today - backup_date < interval:
                     recent.append(entry.name)
-            filenames = set(SECTION_FILENAMES.values())
             for name in recent:
-                contents = self.disk.listdir(self.cloud_path(backups_path, name))
-                if filenames.issubset({item.name for item in contents if item.type == "file"}):
+                if self._backup_is_complete(self.cloud_path(backups_path, name)):
                     return False
+
+            available = {entry.name.casefold() for entry in self.disk.listdir(account_path)
+                         if entry.type == "file"}
+            # Старые аккаунты могут не иметь новых секций или всё ещё хранить
+            # единый itog.json/itog.txt. Копируем только существующие данные.
+            filenames = [name for name in SECTION_FILENAMES.values() if name in available]
+            if not filenames:
+                filenames = [name for name in BACKUP_LEGACY_FILENAMES if name in available][:1]
+            if not filenames:
+                raise ValueError("В облаке нет данных для резервной копии.")
 
             destination = self.cloud_path(backups_path, today.strftime("backup_%d.%m.%Y"))
             staging = self.cloud_path(backups_path, ".pending_" + uuid4().hex)
             self.disk.mkdir(staging)
             try:
-                for filename in SECTION_FILENAMES.values():
+                for filename in filenames:
                     if self.read_user_data_text().split("~~")[0].strip() != account:
                         return False
                     self.disk.copy(
@@ -652,6 +704,10 @@ class Cloud(SharedGroupsMixin):
                         self.cloud_path(staging, filename),
                         overwrite=False, wait=True, poll_timeout=120,
                     )
+                self.disk.upload(
+                    io.BytesIO(json.dumps({"files": filenames}).encode("utf-8")),
+                    self.cloud_path(staging, BACKUP_MANIFEST), overwrite=False,
+                )
                 if self.read_user_data_text().split("~~")[0].strip() != account:
                     return False
                 # overwrite=False сохраняет уже опубликованный другим устройством
@@ -668,6 +724,8 @@ class Cloud(SharedGroupsMixin):
 
     def _check_weekly_backup(self):
         """Проверяет срок в фоне; после сетевой ошибки повторяет через 5 минут."""
+        if not getattr(self, "_backup_checks_enabled", True):
+            return
         account = self.read_user_data_text().split("~~")[0].strip()
         if not account:
             return
@@ -694,26 +752,30 @@ class Cloud(SharedGroupsMixin):
         уходят в облако параллельно (см. upload()).
         """
         while True:
+            login_password = None
+            with self._upload_cv:
+                if self._pending_login_password is None:
+                    self._upload_cv.wait(timeout=BACKUP_RETRY_SECONDS)
+                if self._pending_login_password is not None:
+                    # Debounce: схлопываем небольшие пачки быстрых изменений.
+                    self._upload_cv.wait(timeout=0.7)
+                    login_password = self._pending_login_password
+                    self._pending_login_password = None
+            try:
+                if login_password:
+                    self.upload(login_password)
+                elif login_password is not None:
+                    self.sync_shared_groups()
+            except Exception as exc:
+                print(f"Ошибка фоновой выгрузки: {type(exc).__name__}")
+            # Очередь изменений имеет приоритет над резервным копированием.
+            with self._upload_cv:
+                if self._pending_login_password is not None:
+                    continue
             try:
                 self._check_weekly_backup()
             except Exception as exc:
                 print(f"Ошибка проверки бэкапов: {type(exc).__name__}")
-            with self._upload_cv:
-                if self._pending_login_password is None:
-                    self._upload_cv.wait(timeout=BACKUP_RETRY_SECONDS)
-                if self._pending_login_password is None:
-                    continue
-                # Debounce: даём небольшим "пачкам" быстрых изменений схлопнуться в одну загрузку
-                self._upload_cv.wait(timeout=0.7)
-                login_password = self._pending_login_password
-                self._pending_login_password = None
-            try:
-                if login_password:
-                    self.upload(login_password)
-                else:
-                    self.sync_shared_groups()
-            except Exception as exc:
-                print(f"Ошибка фоновой выгрузки: {type(exc).__name__}")
 
     def request_upload(self, login_password):
         """Потокобезопасно ставит в очередь выгрузку для данного аккаунта.
@@ -729,13 +791,27 @@ class Cloud(SharedGroupsMixin):
     def read_user_data_text(self):
         if self.web:
             return self.web_store.read_meta_text("user_data")
-        return read_encrypted_text(self.user_data, encoding="utf-8")
+        with self.file_lock():
+            path = Path(os.path.abspath(self.user_data))
+            signature = file_signature(path)
+            cached = getattr(self, "_user_data_cache", None)
+            if cached is not None and cached[:2] == (path, signature):
+                return cached[2]
+            self._user_data_cache = None
+            text = read_encrypted_text(path, encoding="utf-8")
+            if file_signature(path) == signature:
+                self._user_data_cache = path, signature, text
+            return text
 
     def write_user_data_text(self, text):
         if self.web:
             self.web_store.write_meta_text("user_data", text)
         else:
-            write_encrypted_text(self.user_data, text, encoding="utf-8")
+            with self.file_lock():
+                self._user_data_cache = None
+                write_encrypted_text(self.user_data, text, encoding="utf-8")
+        # Явный вход происходит после скачивания/создания данных аккаунта.
+        self._backup_checks_enabled = True
         # Вход будит фоновый поток, чтобы первый бэкап не ждал таймера.
         with self._upload_cv:
             self._upload_cv.notify()
@@ -816,6 +892,9 @@ class Cloud(SharedGroupsMixin):
             else:
                 itog["Have account"] = False
             self.sync_shared_groups()
+        self._backup_checks_enabled = True
+        with self._upload_cv:
+            self._upload_cv.notify()
         return itog
 
     def alg_for_regist(self, login, password):
@@ -845,7 +924,8 @@ class Cloud(SharedGroupsMixin):
             itog["Completed"] = True
             if not self.check_user_data():
                 self._move_active_saves_to_local_backup()
-            self.download(f"{login}_{password}")
+            if not self.download(f"{login}_{password}"):
+                raise DropboxDiskError("Не удалось загрузить данные аккаунта из Dropbox.")
             self.write_user_data_text(f"{login}_{password}~~{login}~~{password}")
             a = self.read_accounts_text()
             self.write_accounts_text(a + f'\n{login}~~{password}\n')
@@ -854,6 +934,7 @@ class Cloud(SharedGroupsMixin):
             itog["Completed"] = False
         return itog
 
+    @timed
     def alg_for_redact(self):
         """Планирует выгрузку изменений в облако.
 

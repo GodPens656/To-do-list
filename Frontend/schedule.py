@@ -44,18 +44,10 @@ class TaskSchedule:
             group["id"]: group["name"] for group in front.back.get_groups()
             if group.get("type") != "notes"
         }
-        self.back = ft.IconButton(
-            icon=ft.Icons.ARROW_BACK_ROUNDED, icon_color=self.colors["TxtColor"],
-            tooltip="Назад к настройкам",
+        self.header = self.libs.create_style_header(
+            "Расписание", width=self.width, back_tooltip="Назад к настройкам",
         )
-        self.header = ft.Container(
-            ft.Row([
-                self.back,
-                ft.Text("Расписание", size=self.libs.text_size(24),
-                        color=self.colors["TxtColor"], weight=ft.FontWeight.W_700),
-            ], spacing=8),
-            width=self.width, padding=ft.Padding.symmetric(vertical=6),
-        )
+        self.back = self.header._nd_dialog_back
         self.month_title = ft.Text(size=self.libs.text_size(17 if front.phone else 21),
                                    color=self.colors["TxtColor"],
                                    weight=ft.FontWeight.W_600, no_wrap=True, expand=True,
@@ -134,7 +126,9 @@ class TaskSchedule:
             details.append(entry.detail)
         if entry.completed:
             details.append("Выполнено")
-        self.libs.open_dialog("Дело в расписании", "\n\n".join(details), self.front.page)
+        self.libs.open_dialog(
+            "Дело в расписании", "\n\n".join(details), self.front.page, linkify=True,
+        )
 
     def show_day(self, day):
         """Build only one page of a busy day, including events beyond the preview."""
@@ -173,8 +167,7 @@ class TaskSchedule:
         next_button.on_click = lambda _: move(1)
         render()
         dialog = ft.AlertDialog(
-            title=ft.Text(f"Дела · {day:%d.%m.%Y}", size=self.libs.text_size(18),
-                          color=self.colors["TxtColor"]),
+            title=self.libs.create_dialog_title(f"Дела · {day:%d.%m.%Y}"),
             content=ft.Container(
                 ft.Column([
                     listing,
@@ -199,7 +192,7 @@ class TaskSchedule:
                     ft.Icon(ft.Icons.CHECK_ROUNDED if entry.completed else icon, size=12, color=color),
                     ft.Text(label, size=self.libs.text_size(10), color=color),
                 ], spacing=4),
-                ft.Text(entry.name, size=self.libs.text_size(12), color=self.colors["TxtColor"],
+                self.libs.linked_text(entry.name, size=self.libs.text_size(12), color=self.colors["TxtColor"],
                         max_lines=2, overflow=ft.TextOverflow.ELLIPSIS, weight=ft.FontWeight.W_500),
             ], spacing=4, tight=True),
             padding=8, bgcolor=ft.Colors.with_opacity(0.10, color),

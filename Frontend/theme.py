@@ -1,6 +1,7 @@
 import flet as ft
 import re
 from .glass import configure_glass_theme, is_glass, is_toolbar_glass, mix_color
+from .dayplanner import color_rgb, configure_widget_theme, contrast_color
 
 
 THEME_STYLE_OPTIONS = (
@@ -8,11 +9,9 @@ THEME_STYLE_OPTIONS = (
     ("improved", "Минималистичная (синяя)"),
     ("improved_green", "Минималистичная (зеленая)"),
     ("improved_purple", "Минималистичная (фиолетовая)"),
-    ("classic", "Ранняя"),
     ("nord", "Nord"),
     ("oled", "OLED"),
     ("oled_green", "OLED (зеленая)"),
-    ("oled_blue", "OLED (синяя)"),
 )
 THEME_STYLES = {key for key, _ in THEME_STYLE_OPTIONS}
 THEME_EFFECT_OPTIONS = (
@@ -79,12 +78,12 @@ THEME_COLORS = {
     },
     "chatgpt_light": {
         "BorderColor": "#D9D9E3",
-        "ContBgColor": "#E3E3E8",
+        "ContBgColor": "#F9FAFC",
         "BgColor": "#FFFFFF",
         "TxtColor": "#0D0D0D",
-        "BtnColor": "#ECECF1",
-        "ProgressColor": "#A6A6A6",
-        "ProgressBgColor": "#E5E5E5",
+        "BtnColor": "#F3F4F7",
+        "ProgressColor": "#2563EB",
+        "ProgressBgColor": "#DBEAFE",
         "LoadColor": "#F7F7F8",
         "DialogOverlayColor": "#FFFFFF",
         "WarnTextColor": "#8A6116",
@@ -288,20 +287,6 @@ THEME_COLORS.update({
         "ProgressBgColor": "#D1EADF",
         "BtnBorderColor": "#8DBBA6",
     },
-    "oled_blue_dark": {
-        **THEME_COLORS["oled_dark"],
-        "BtnColor": "#122139",
-        "ProgressColor": "#60A5FA",
-        "ProgressBgColor": "#1B304D",
-        "BtnBorderColor": "#3D5679",
-    },
-    "oled_blue_light": {
-        **THEME_COLORS["oled_light"],
-        "BtnColor": "#E1ECFC",
-        "ProgressColor": "#2563EB",
-        "ProgressBgColor": "#D6E5FA",
-        "BtnBorderColor": "#92AFD8",
-    },
 })
 
 BUTTON_BACKGROUND_OPTIONS = (
@@ -363,8 +348,7 @@ def resolve_button_color(theme, mode="default", custom_color="#5659F0"):
 
 
 def _base_theme(theme):
-    base = str(theme).removeprefix("liquid_glass_half_").removeprefix("liquid_glass_")
-    return base.removeprefix("classic_")
+    return str(theme).removeprefix("liquid_glass_half_").removeprefix("liquid_glass_")
 
 
 def get_theme_colors(theme, button_color=None):
@@ -374,15 +358,50 @@ def get_theme_colors(theme, button_color=None):
     colors = dict(THEME_COLORS.get(base_theme, THEME_COLORS["light"]))
     dark = str(theme).endswith("dark")
     colors.update({
+        "InputBgColor": colors["BtnColor"],
         "MutedColor": ft.Colors.with_opacity(0.68, colors["TxtColor"]),
         "SoftBorderColor": ft.Colors.with_opacity(0.38, colors["BorderColor"]),
         "HoverColor": ft.Colors.with_opacity(0.08, colors["TxtColor"]),
-        "DangerColor": "#F28B82" if dark else "#B42318",
-        "SuccessColor": "#9BC5A5" if dark else "#28734A",
+        "DangerColor": "#F28B82" if dark else "#D64545",
+        "SuccessColor": "#2E9E5B",
     })
+    if _base_theme(theme).startswith("chatgpt_"):
+        colors["DangerColor"] = "#F28B82" if dark else "#B42318"
+        colors["SuccessColor"] = "#9BC5A5" if dark else "#28734A"
+    if _base_theme(theme).startswith(("chatgpt_", "nord_")):
+        # Keep settings icons readable over buttons, glass and wallpapers.
+        colors["CategoryIconColor"] = colors["TxtColor"]
+        colors["CategoryIconBgColor"] = mix_color(colors["BgColor"], colors["ProgressColor"], 0.18)
     if button_color is not None:
         colors["BtnColor"] = button_color
         colors["ProgressColor"] = button_color
+    colors["PrimaryColor"] = colors["ProgressColor"]
+    if button_color is not None:
+        # Preserve the emphasis of primary actions when regular buttons also
+        # use the selected accent. Reverse the shade near black/white so that
+        # even the end points of the picker retain two distinct fills.
+        target, fallback = ("#FFFFFF", "#000000") if dark else ("#000000", "#FFFFFF")
+        primary = mix_color(button_color, target, 0.45)
+        if max(abs(a - b) for a, b in zip(color_rgb(button_color), color_rgb(primary))) < 32:
+            primary = mix_color(button_color, fallback, 0.25)
+        colors["PrimaryColor"] = primary
+        colors["CategoryIconColor"] = primary
+        colors["CategoryIconBgColor"] = mix_color(
+            "#161616" if dark else "#FFFFFF", button_color, 0.12,
+        )
+    elif is_glass(theme):
+        # Opaque badges keep settings icons distinct from the wallpaper and
+        # glass reflections, in both collapsed and expanded categories.
+        icon = colors.get("CategoryIconColor", colors["PrimaryColor"]) if dark else colors["PrimaryColor"]
+        colors["CategoryIconColor"] = mix_color(
+            icon, "#FFFFFF" if dark else "#000000",
+            0.30 if dark else 0.28,
+        )
+        colors["CategoryIconBgColor"] = mix_color(
+            "#161616" if dark else "#FFFFFF", colors["ProgressColor"], 0.12,
+        )
+    colors.setdefault("CategoryIconColor", colors["ProgressColor"])
+    colors.setdefault("CategoryIconBgColor", ft.Colors.with_opacity(0.18, colors["ProgressColor"]))
     if is_glass(theme):
         surface = colors["ContBgColor"]
         accent = colors["ProgressColor"]
@@ -399,6 +418,10 @@ def get_theme_colors(theme, button_color=None):
             colors["GlassButtonTint"] = ft.Colors.with_opacity(0.30, button_color)
             if not is_toolbar_glass(theme):
                 colors["BtnColor"] = colors["GlassButtonTint"]
+    colors["ButtonTextColor"] = (
+        colors["TxtColor"] if is_glass(theme) and not is_toolbar_glass(theme)
+        else contrast_color(colors["BtnColor"])
+    )
     return colors
 
 
@@ -422,35 +445,13 @@ def resolve_theme(theme_style, platform_brightness, effect="none"):
     effect = normalize_theme_effect(effect)
     if effect != "none":
         return f"{effect}_{style}_{brightness}"
-    return brightness if style == "classic" else f"{style}_{brightness}"
+    return f"{style}_{brightness}"
 
 
 def build_flet_theme(theme, button_color=None):
     """Настраивает стандартные контролы Flet в цветах выбранной палитры."""
     colors = get_theme_colors(theme, button_color)
-    dark_text_primary_themes = {
-        "chatgpt_dark", "chatgpt_light", "improved_dark", "improved_green_dark",
-        "liquid_glass_dark", "liquid_glass_light",
-        "nord_dark", "improved_purple_dark", "oled_green_dark", "oled_blue_dark",
-    }
-    base_theme = _base_theme(theme)
-    on_primary = "#171717" if base_theme in dark_text_primary_themes else "#FFFFFF"
-    switch_theme = None
-    if base_theme in {"chatgpt_light", "liquid_glass_light"}:
-        switch_theme = ft.SwitchTheme(
-            thumb_color={
-                ft.ControlState.SELECTED: "#FFFFFF",
-                ft.ControlState.DEFAULT: "#F7F8FC",
-            },
-            track_color={
-                ft.ControlState.SELECTED: colors["ProgressColor"],
-                ft.ControlState.DEFAULT: "#B7BBC8",
-            },
-            track_outline_color={
-                ft.ControlState.SELECTED: colors["ProgressColor"],
-                ft.ControlState.DEFAULT: "#858B9A",
-            },
-        )
+    on_primary = contrast_color(colors["ProgressColor"])
     result = ft.Theme(
         use_material3=True,
         color_scheme=ft.ColorScheme(
@@ -470,6 +471,6 @@ def build_flet_theme(theme, button_color=None):
         dropdown_theme=ft.DropdownTheme(
             text_style=ft.TextStyle(color=colors["TxtColor"]),
         ),
-        switch_theme=switch_theme,
     )
+    configure_widget_theme(result, colors)
     return configure_glass_theme(result, theme, colors)

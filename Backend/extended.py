@@ -253,11 +253,11 @@ class Backend2:
             temporary.replace(archive)
         self._cache_custom_icons_for_page(icons)
 
-    def _load(self):
-        """Читает все секции хранилища разом в виде словаря списков словарей."""
+    def _load(self, *, copy_data=True):
+        """Использует тот же проверяемый файловый кэш, что и основной Backend."""
         if self.web:
             return self.store.load_all_sections()
-        return load_all_sections(self.data_dir)
+        return load_all_sections(self.data_dir, copy_data=copy_data)
 
     def _save(self, data, *, undoable=True):
         """Сохраняет секции, перезаписывая только реально изменившиеся файлы."""
@@ -333,10 +333,10 @@ class Backend2:
             "load_screen": "True",
             "special_tasks_separate_dialogs": "False",
             "theme_style": "chatgpt",
-            "theme_effect": "none",
-            "animated_wallpaper": "none",
+            "theme_effect": "liquid_glass_half",
+            "animated_wallpaper": "waves",
             "wallpaper_intensity": "60",
-            "dialog_animations": "True",
+            "dialog_animations": "False" if self.web else "True",
             "action_panel_position": normalize_action_panel_position(None, phone=getattr(self, "phone", False)),
             "group_panel_position": "top",
             "font_family": "default",
@@ -364,6 +364,10 @@ class Backend2:
             if key not in settings:
                 settings[key] = value
                 changed = True
+        style = normalize_theme_style(settings["theme_style"])
+        if style != settings["theme_style"]:
+            settings["theme_style"] = style
+            changed = True
         effect = normalize_theme_effect(settings["theme_effect"], phone=getattr(self, "phone", False))
         if effect != settings["theme_effect"]:
             settings["theme_effect"] = effect
@@ -554,11 +558,13 @@ class Backend2:
                 normalize_theme_style(settings.get("theme_style", "chatgpt"))
             ),
             'theme_effect': normalize_theme_effect(
-                settings.get("theme_effect"), phone=getattr(self, "phone", False)
+                settings.get("theme_effect", "liquid_glass_half"), phone=getattr(self, "phone", False)
             ),
-            'animated_wallpaper': normalize_wallpaper(settings.get("animated_wallpaper")),
+            'animated_wallpaper': normalize_wallpaper(settings.get("animated_wallpaper", "waves")),
             'wallpaper_intensity': normalize_wallpaper_intensity(settings.get("wallpaper_intensity")),
-            'dialog_animations': self._to_bool(settings.get("dialog_animations", "True")),
+            'dialog_animations': self._to_bool(settings.get(
+                "dialog_animations", "False" if self.web else "True"
+            )),
             'action_panel_position': normalize_action_panel_position(
                 settings.get("action_panel_position"), phone=getattr(self, "phone", False)
             ),

@@ -7,16 +7,20 @@
 и используется один раз при первом запуске приложения.
 """
 import json
+import os
 import shutil
 import threading
+from collections import OrderedDict
 from copy import deepcopy
 from pathlib import Path
 from .crypto import (
     ACCOUNT_DATA_FILENAMES, data_encryption_enabled, decrypt_bytes,
-    encrypt_file_if_plaintext, is_encrypted, read_text, write_bytes, write_text,
+    encrypt_file_if_plaintext, file_signature, invalidate_data_encryption,
+    is_encrypted, read_text, write_bytes, write_text,
 )
 
 STORAGE_LOCK = threading.RLock()
+_SECTION_CACHE = OrderedDict()
 
 
 def set_data_encryption(data_dir, enabled):
@@ -43,6 +47,7 @@ def set_data_encryption(data_dir, enabled):
             temporary = directory / "security.json.tmp"
             temporary.write_text(json.dumps({"encryption_enabled": enabled}), encoding="utf-8")
             temporary.replace(directory / "security.json")
+            invalidate_data_encryption(directory)
         except Exception:
             for path in reversed(changed):
                 write_bytes(path, originals[path][0], encrypt=False)
@@ -123,26 +128,92 @@ def _default_section(key):
     return []
 
 
-def load_section(data_dir, key):
-    """Читает один файл секции. Возвращает корректный список даже если файла
-    нет или он повреждён."""
-    path = Path(data_dir) / SECTION_FILENAMES[key]
+def _remember_section(path, key, text, encrypted, signature, security_signature):
+    """Хранит отдельный снимок: вызывающий код не получает его для изменения."""
     try:
-        with STORAGE_LOCK:
-            value = json.loads(read_text(path, encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        value = json.loads(text) if text is not None else None
+    except json.JSONDecodeError:
         value = None
     if not isinstance(value, list):
         value = _default_section(key)
     if key == "groups":
         _normalize_groups(value)
-    return value
+    cached = {
+        "signature": (signature, security_signature),
+        "text": text, "encrypted": encrypted, "value": value,
+    }
+    _SECTION_CACHE[path] = cached
+    _SECTION_CACHE.move_to_end(path)
+    # Нативное приложение обычно использует две папки; ограничение не даёт
+    # удерживать удалённые временные хранилища и старые снимки бесконечно.
+    if len(_SECTION_CACHE) > 128:
+        _SECTION_CACHE.popitem(last=False)
+    return cached
 
 
-def load_all_sections(data_dir):
-    """Читает все секции разом и возвращает словарь списков записей."""
+def _copy_section(cached, key):
+    """Создаёт независимые JSON-объекты без обхода всего дерева через deepcopy."""
+    try:
+        value = json.loads(cached["text"]) if cached["text"] is not None else None
+    except json.JSONDecodeError:
+        value = None
+    if not isinstance(value, list):
+        value = _default_section(key)
+    return _normalize_groups(value) if key == "groups" else value
+
+
+def _read_section(data_dir, key, security_signature):
+    """Проверяет обе сигнатуры под STORAGE_LOCK перед использованием снимка."""
+    path = Path(os.path.abspath(data_dir)) / SECTION_FILENAMES[key]
+    try:
+        signature = file_signature(path)
+        cached = _SECTION_CACHE.get(path)
+        if cached is not None and cached["signature"] == (signature, security_signature):
+            _SECTION_CACHE.move_to_end(path)
+            return cached
+        _SECTION_CACHE.pop(path, None)
+        if signature is None:
+            return _remember_section(path, key, None, None, None, security_signature)
+        raw = path.read_bytes()
+        text = decrypt_bytes(raw).decode("utf-8")
+        encrypted = is_encrypted(raw)
+        stable = file_signature(path) == signature
+        # Сохраняем прежнюю автоматическую миграцию открытого JSON в AES-GCM.
+        if stable and not encrypted and data_encryption_enabled(path.parent):
+            write_text(path, text, encoding="utf-8")
+            signature = file_signature(path)
+            encrypted = True
+        cached = _remember_section(path, key, text, encrypted, signature, security_signature)
+        if not stable:
+            _SECTION_CACHE.pop(path, None)
+        return cached
+    except OSError:
+        _SECTION_CACHE.pop(path, None)
+        value = _default_section(key)
+        return {"text": None, "value": _normalize_groups(value) if key == "groups" else value}
+
+
+def load_section(data_dir, key):
+    """Читает один файл секции. Возвращает корректный список даже если файла
+    нет или он повреждён."""
     with STORAGE_LOCK:
-        return {key: load_section(data_dir, key) for key in SECTION_FILENAMES}
+        signature = file_signature(Path(data_dir) / "security.json")
+        return _copy_section(_read_section(data_dir, key, signature), key)
+
+
+def load_all_sections(data_dir, *, copy_data=True):
+    """Возвращает копию секций из кэша, проверяя внешние изменения файлов.
+
+    copy_data=False предназначен только для внутренних читающих методов:
+    такой снимок нельзя менять, в том числе его вложенные списки и словари.
+    """
+    with STORAGE_LOCK:
+        signature = file_signature(Path(data_dir) / "security.json")
+        data = {}
+        for key in SECTION_FILENAMES:
+            cached = _read_section(data_dir, key, signature)
+            data[key] = _copy_section(cached, key) if copy_data else cached["value"]
+        return data
 
 
 def save_section(data_dir, key, value):
@@ -154,17 +225,29 @@ def save_section(data_dir, key, value):
 
 
 def _save_section(data_dir, key, value):
-    path = Path(data_dir) / SECTION_FILENAMES[key]
+    path = Path(os.path.abspath(data_dir)) / SECTION_FILENAMES[key]
     path.parent.mkdir(parents=True, exist_ok=True)
     new_text = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
-    if path.exists():
+    signature = file_signature(path)
+    security_signature = file_signature(path.parent / "security.json")
+    enabled = data_encryption_enabled(path.parent)
+    cached = _SECTION_CACHE.get(path)
+    if cached is not None and cached["signature"] == (signature, security_signature):
+        if cached["encrypted"] == enabled and cached["text"] == new_text:
+            return False
+    elif signature is not None:
         try:
-            if (is_encrypted(path.read_bytes()) == data_encryption_enabled(data_dir)
-                    and read_text(path, encoding="utf-8") == new_text):
-                return False
+            raw = path.read_bytes()
+            if is_encrypted(raw) == enabled:
+                text = decrypt_bytes(raw).decode("utf-8")
+                if file_signature(path) == signature:
+                    _remember_section(path, key, text, enabled, signature, security_signature)
+                    if text == new_text:
+                        return False
         except OSError:
             pass
     write_text(path, new_text, encoding="utf-8")
+    _remember_section(path, key, new_text, enabled, file_signature(path), security_signature)
     return True
 
 
@@ -202,9 +285,13 @@ def _save_all_sections(data_dir, data, force=False):
         if key not in data:
             continue
         if force:
-            path = Path(data_dir) / SECTION_FILENAMES[key]
+            path = Path(os.path.abspath(data_dir)) / SECTION_FILENAMES[key]
             path.parent.mkdir(parents=True, exist_ok=True)
-            write_text(path, json.dumps(data[key], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            security_signature = file_signature(path.parent / "security.json")
+            text = json.dumps(data[key], ensure_ascii=False, indent=2) + "\n"
+            enabled = data_encryption_enabled(path.parent)
+            write_text(path, text, encoding="utf-8")
+            _remember_section(path, key, text, enabled, file_signature(path), security_signature)
             changed.add(key)
         elif save_section(data_dir, key, data[key]):
             changed.add(key)

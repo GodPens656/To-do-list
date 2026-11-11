@@ -165,17 +165,17 @@ class WallpaperCanvas(cv.Canvas):
                     self.shapes.append(cv.Circle(0, 0, paint=ft.Paint(
                         style=ft.PaintingStyle.STROKE, stroke_width=1)))
             if bubbles:
-                a = .1 + .3 * intensity
+                a = .14 + .4 * intensity
                 for i, p in zip(range(count), self._particles):
                     fill, edge = self.shapes[2 * i], self.shapes[2 * i + 1]
                     fill.radius = edge.radius = p["r"]
                     fill.paint.gradient.radius = p["r"]
                     fill.paint.gradient.focal_radius = p["r"] * .1
                     fill.paint.gradient.colors = [alpha(a * .6, cols[i % 3]), alpha(a * 1.4, cols[i % 3])]
-                    edge.paint.color = alpha(.16 * intensity + .04, "#FFFFFF")
+                    edge.paint.color = alpha(.24 * intensity + .07, "#FFFFFF" if manager.dark else cols[i % 3])
             else:
                 colors = (cols[1], "#FFFFFF" if manager.dark else cols[0])
-                levels = [[alpha((.35 + .65 * j / 31) * (.25 + .75 * intensity), c)
+                levels = [[alpha((.35 + .65 * j / 31) * (.4 + .6 * intensity), c)
                            for j in range(32)] for c in colors]
                 for shape, p in zip(self.shapes, self._particles):
                     shape.x, shape.radius = p["x"] * self._w, p["r"]
@@ -184,10 +184,10 @@ class WallpaperCanvas(cv.Canvas):
             for i, shape in enumerate(self.shapes):
                 shape.paint.blend_mode = ft.BlendMode.PLUS if manager.dark else ft.BlendMode.SRC_OVER
                 color = cols[i % 3]
-                shape.paint.gradient.colors = [alpha(.16 + .36 * intensity, color), alpha(0, color)]
+                shape.paint.gradient.colors = [alpha(.2 + .48 * intensity, color), alpha(0, color)]
         elif mode == "waves":
             for i, shape in enumerate(self.shapes):
-                shape.paint.color = alpha((.08 + .2 * intensity) * (1 - i * .16), cols[i % 3])
+                shape.paint.color = alpha((.12 + .3 * intensity) * (1 - i * .16), cols[i % 3])
         self._style_revision = manager.style_revision
 
     def draw(self, dt):
@@ -234,15 +234,15 @@ class WallpaperCanvas(cv.Canvas):
                     point.y = base + math.sin(first + phase) * amp + math.sin(second - counter_phase) * amp * .4
         elif manager.mode == "gradient":
             alpha = ft.Colors.with_opacity
-            hue, saturation = manager.hue, max(.5, min(.9, manager.saturation))
-            shift, a = math.sin(t * .08) * 40, .1 + .38 * manager.intensity
+            hue, saturation = manager.hue, max(.65, min(.95, manager.saturation))
+            shift, a = math.sin(t * .08) * 40, .16 + .5 * manager.intensity
             shape = self.shapes[0]
             gradient = shape.paint.gradient
             gradient.begin = (w * (.5 + .5 * math.sin(t * .05)), 0)
             gradient.end = (w * (.5 - .5 * math.cos(t * .06)), h)
-            gradient.colors = [alpha(a, _hsl(hue + shift, saturation, .4 if manager.dark else .7)),
-                               alpha(a * .8, _hsl(hue + 50 + shift, saturation, .35 if manager.dark else .75)),
-                               alpha(a, _hsl(hue - 50 + shift, saturation, .3 if manager.dark else .68))]
+            gradient.colors = [alpha(a, _hsl(hue + shift, saturation, .4 if manager.dark else .58)),
+                               alpha(a * .8, _hsl(hue + 50 + shift, saturation, .35 if manager.dark else .64)),
+                               alpha(a, _hsl(hue - 50 + shift, saturation, .3 if manager.dark else .56))]
 
 
 @dataclass
@@ -286,8 +286,8 @@ class WallpaperManager:
         if self._appearance != (accent, dark):
             self._appearance = accent, dark
             self.hue, self.saturation = _accent_hsl(accent)
-            saturation = max(.55, min(.95, self.saturation))
-            lightness = .55 if dark else .62
+            saturation = max(.65, min(.95, self.saturation))
+            lightness = .55 if dark else .56
             self.palette = [_hsl(self.hue + shift, saturation, lightness + extra)
                             for shift, extra in ((0, 0), (40, 0), (320, .04))]
             self.style_revision += 1

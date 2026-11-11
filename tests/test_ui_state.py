@@ -7,6 +7,7 @@ import flet as ft
 
 from Backend.webstorage import WebSessionStore
 from Frontend.init_page import Front
+from Frontend.task_actions import TaskActionsMenu
 
 
 def make_front(theme="chatgpt", dark=False, phone=False, page=None, effect=None, settings=None):
@@ -35,6 +36,22 @@ def make_front(theme="chatgpt", dark=False, phone=False, page=None, effect=None,
     front.current_group_id = "default"
     front.render_daily_repeat_tasks()
     return front
+
+
+def task_menu(card):
+    pending = [card]
+    while pending:
+        control = pending.pop()
+        if isinstance(control, TaskActionsMenu):
+            control.build_items()
+            return control
+        if isinstance(control, ft.PopupMenuButton):
+            return control
+        pending.extend(getattr(control, "controls", []))
+        content = getattr(control, "content", None)
+        if isinstance(content, ft.Control):
+            pending.append(content)
+    raise AssertionError("Task actions menu was not found")
 
 
 class TaskPresentationTests(unittest.TestCase):
@@ -118,7 +135,7 @@ class TaskPresentationTests(unittest.TestCase):
         self.front.back.saveB("Единственное дело", "default")
         self.front.render_daily_repeat_tasks()
         card = self.cards()[0]
-        delete = card.content.controls[0].content.controls[1]
+        delete = task_menu(card).items[-1]
         delete.on_click(None)
         callback, *args = self.front.page.run_task.call_args.args
         asyncio.run(callback(*args))
@@ -153,7 +170,13 @@ class TaskPresentationTests(unittest.TestCase):
                 controls = card.content.controls
                 self.assertIsInstance(controls[0 if phone else 1], ft.Checkbox)
                 actions = controls[2 if phone else 0].content.controls
-                self.assertEqual([c.tooltip for c in actions], ["Редактировать дело", "Удалить дело"])
+                self.assertEqual(len(actions), 1)
+                self.assertIsInstance(actions[0], TaskActionsMenu)
+                self.assertEqual(actions[0].items, [])
+                self.assertEqual(actions[0].tooltip, "Действия с делом")
+                self.assertEqual([item.content for item in task_menu(card).items], [
+                    "Редактировать", "Скопировать", "Сделать повторяющимися", "Удалить",
+                ])
 
     def test_group_counter_switch_hides_progress_but_keeps_search_results(self):
         self.add_tasks()
@@ -176,7 +199,7 @@ class TaskPresentationTests(unittest.TestCase):
         self.assertFalse(self.front.task_summary.visible)
         self.front.show_groups()
         self.front.open_group_management()
-        subtitle = self.front._groups_column.controls[0].controls[0].content.controls[1].controls[1]
+        subtitle = self.front._groups_column.controls[0].controls[0].content.content.controls[1].controls[1]
         self.assertFalse(subtitle.visible)
         self.front.current_group_id = "default"
         switch.value = True
@@ -194,7 +217,7 @@ class TaskPresentationTests(unittest.TestCase):
         self.front.back.update_group_settings("default", show_completion_counter=False)
         self.front.close_page()
         self.assertEqual(self.front.current_group_id, "default")
-        subtitle = self.front._groups_column.controls[0].controls[0].content.controls[1].controls[1]
+        subtitle = self.front._groups_column.controls[0].controls[0].content.content.controls[1].controls[1]
         self.assertFalse(subtitle.visible)
 
     def test_group_title_switch_is_independent_and_follows_its_label(self):
@@ -242,7 +265,7 @@ class TaskPresentationTests(unittest.TestCase):
                 self.assertTrue(front.task_overview.visible)
 
     def test_all_palettes_and_layouts_build_with_metadata(self):
-        for theme in ("chatgpt", "liquid_glass", "improved", "improved_green", "classic", "nord", "oled"):
+        for theme in ("chatgpt", "liquid_glass", "improved", "improved_green", "nord", "oled"):
             for dark in (False, True):
                 for phone in (False, True):
                     with self.subTest(theme=theme, dark=dark, phone=phone):

@@ -176,6 +176,7 @@ class SecurityUiTests(unittest.IsolatedAsyncioTestCase):
         for web in (False, True):
             with self.subTest(web=web):
                 front = make_front()
+                front._update_control = Mock()
                 front.back2.set_app_password("пароль входа")
                 front.web = web
                 front._app_locked = True

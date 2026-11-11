@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from Backend.cloud import Cloud
@@ -31,6 +32,10 @@ class AccountEncryptionTests(unittest.TestCase):
         }
         self.disk = Mock()
         self.disk.exists.side_effect = self.remote.__contains__
+        self.disk.listdir.side_effect = lambda path: [
+            SimpleNamespace(name=name.rsplit('/', 1)[-1], type='file')
+            for name in self.remote if name.rsplit('/', 1)[0] == path
+        ]
         self.disk.download.side_effect = lambda path, target: target.write(self.remote[path])
         self.disk.upload.side_effect = self.upload
 

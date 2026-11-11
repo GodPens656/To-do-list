@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <base href="/">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Flet application.">
+
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Flet">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon-192.png">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <title>Flet</title>
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    /* Flutter paints the text, caret and selection on its canvas. Firefox can
+       also paint the native selection of its transparent input/textarea,
+       producing a second highlight with different font metrics. Hide only
+       that editing overlay; it must still receive focus and input events. */
+    @supports (-moz-appearance: none) {
+      flutter-view .flt-text-editing {
+        opacity: 0 !important;
+      }
+    }
+  </style>
+
+  <!-- Flet 0.82.0 bootstrap. Flet patches the base URL and app config below. -->
+  <script>
+    var flet = {
+      pyodide: false,
+      multiView: false,
+      noCdn: false,
+      webSocketEndpoint: "/ws",
+      entrypointBaseUrl: "/",
+      assetBase: "/",
+      routeUrlStrategy: "path",
+      canvasKitBaseUrl: "/canvaskit/",
+      pyodideUrl: "/pyodide/pyodide.js",
+      webRenderer: "auto",
+      fontFallbackBaseUrl: "assets/fonts/",
+      appPackageUrl: "app.tar.gz"
+    };
+
+    flet.flutterAppLoaded = new Promise((resolve) => {
+      flet.flutterAppResolve = resolve;
+    });
+  </script>
+
+  <!-- fletAppConfig -->
+
+  <script src="python.js"></script>
+</head>
+
+<body>
+  <div id="loading">
+    <style>
+      body {
+        inset: 0;
+        overflow: hidden;
+        margin: 0;
+        padding: 0;
+        position: fixed;
+      }
+
+      #loading {
+        align-items: center;
+        display: flex;
+        height: 100%;
+        justify-content: center;
+        width: 100%;
+      }
+
+      #loading img {
+        animation: 1s ease-in-out 0s infinite alternate breathe;
+        opacity: .66;
+        transition: opacity .4s;
+      }
+
+      #loading.main_done img {
+        opacity: 1;
+      }
+
+      #loading.init_done img {
+        animation: .33s ease-in-out 0s 1 forwards zooooom;
+        opacity: .05;
+      }
+
+      @keyframes breathe {
+        from {
+          transform: scale(0.4);
+          opacity: 1.0;
+        }
+        to {
+          transform: scale(0.35);
+          opacity: .7;
+        }
+      }
+
+      @keyframes zooooom {
+        from {
+          transform: scale(0.4);
+        }
+        to {
+          transform: scale(10);
+        }
+      }
+    </style>
+    <img src="icons/loading-animation.png" alt="Loading...">
+  </div>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

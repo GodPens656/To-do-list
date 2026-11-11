@@ -42,7 +42,7 @@ class AchievementsView:
                 muted=True, size=12,
             ),
             self.back,
-        ])
+        ], framed=True)
 
     def _text(self, value, *, size=14, muted=False, bold=False, **kwargs):
         return ft.Text(

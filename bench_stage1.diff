@@ -1,0 +1,1032 @@
+--- a/Backend/core.py
++++ b/Backend/core.py
+@@ -6,7 +6,7 @@
+ from datetime import datetime, timedelta, timezone
+ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+ from .cloud import Cloud
+-from .storage import load_all_sections, save_all_sections, empty_data, ensure_split_storage
++from .storage import load_all_sections, save_all_sections, empty_data, ensure_split_storage, STORAGE_LOCK
+ from .json_migration import migrate_legacy_storage
+ from .validation import MAX_GROUP_NAME_LENGTH, text_length_error
+ from .attachments import validate_account_quota
+@@ -91,31 +91,37 @@
+         self.cloud = cloud or Cloud(web_store=web_store)
+ 
+     @timed
+-    def _load(self):
+-        """Читает все секции хранилища (tasks/repeat_tasks/postponed/groups)
+-        разом в виде словаря списков словарей."""
++    def _load(self, *, copy_data=True):
++        """Получает секции из общего кэша, проверяемого по сигнатурам файлов.
++
++        Для изменения всегда нужна копия; copy_data=False используется
++        только внутри читающих методов, не меняющих вложенные записи.
++        """
+         if self.web:
+             return self.store.load_all_sections()
+-        return load_all_sections(self.data_dir)
++        return load_all_sections(self.data_dir, copy_data=copy_data)
+ 
+     @timed
+     def _save(self, data, *, undoable=True):
+         """Сохраняет секции. На ПК/Android — перезаписывая только реально
+         изменившиеся файлы. На сайте — в браузере посетителя (в фоне)."""
+-        previous = self._load()
+-        if previous == data:
+-            return
+-        if undoable:
+-            update_completion_history(
+-                previous, data, local_today(self.web, getattr(self, "page", None)),
+-            )
+-        if self.is_authenticated():
+-            validate_account_quota(previous, data)
+-        if self.web:
+-            self.store.save_all_sections(data)
+-        else:
+-            save_all_sections(self.data_dir, data)
+-        self._undo_state = (deepcopy(previous), deepcopy(data)) if undoable else None
++        # Облачный воркер не должен прочитать половину нового снимка или
++        # сменить файлы между проверкой previous и сохранением секций.
++        with (self.store.data_lock() if self.web else STORAGE_LOCK):
++            previous = self._load(copy_data=False)
++            if previous == data:
++                return
++            if undoable:
++                update_completion_history(
++                    previous, data, local_today(self.web, getattr(self, "page", None)),
++                )
++            if self.is_authenticated():
++                validate_account_quota(previous, data)
++            if self.web:
++                self.store.save_all_sections(data)
++            else:
++                save_all_sections(self.data_dir, data)
++            self._undo_state = (deepcopy(previous), deepcopy(data)) if undoable else None
+         self._notify_undo_change()
+ 
+         callback = getattr(self, 'on_data_change', None)
+@@ -175,7 +181,7 @@
+     def can_undo(self):
+         state = getattr(self, '_undo_state', None)
+         # Never overwrite newer data received from the cloud or another client.
+-        return state is not None and self._load() == state[1]
++        return state is not None and self._load(copy_data=False) == state[1]
+ 
+     def undo_last_action(self):
+         if not self.can_undo():
+@@ -186,23 +192,21 @@
+         return True
+ 
+     def get_quantity_strings(self):
+-        return len(self._load()["tasks"])
++        return len(self._load(copy_data=False)["tasks"])
+ 
+     def get_achievements(self):
+         return achievement_summary(
+-            self._load(), local_today(self.web, getattr(self, "page", None)),
++            self._load(copy_data=False), local_today(self.web, getattr(self, "page", None)),
+         )
+ 
+     def read_tasks(self):
+         """Возвращает обычные дела в виде списка словарей
+         {id, name, status, group, is_repeat, created_date}.
+         В названиях восстанавливаются сохранённые ручные переносы строк."""
+-        tasks = []
+-        for stored_task in self._load()["tasks"]:
+-            task = stored_task.copy()
++        tasks = self._load()["tasks"]
++        for task in tasks:
+             if isinstance(task.get("name"), str):
+                 task["name"] = task["name"].replace('{N}', '\n')
+-            tasks.append(task)
+         return tasks
+ 
+     def saveB(self, name, group_id='default', is_repeat=False, created_date=None,
+@@ -248,9 +252,9 @@
+         self._save(data)
+ 
+     def get_task(self, id_task):
+-        for task in self._load()["tasks"]:
++        for task in self._load(copy_data=False)["tasks"]:
+             if task.get("id") == id_task:
+-                return task.copy()
++                return deepcopy(task)
+         return None
+ 
+     def redact_taskB(self, id_task, new_name, metadata=None):
+@@ -285,7 +289,7 @@
+ 
+     def read_id(self, name_of_task):
+         name_of_task = name_of_task.replace('\n', '{N}')
+-        for task in self._load()["tasks"]:
++        for task in self._load(copy_data=False)["tasks"]:
+             if task.get("name") == name_of_task:
+                 return task.get("id")
+ 
+@@ -297,14 +301,14 @@
+         self._save(data, undoable=False)
+ 
+     def read_name(self, id_task):
+-        for task in self._load()["tasks"]:
++        for task in self._load(copy_data=False)["tasks"]:
+             if task.get("id") == id_task:
+                 return str(task.get("name", "")).replace('{N}', '\n')
+ 
+     def read_created_date(self, id_task):
+         """Возвращает дату создания дела (ДД-ММ-ГГГГ) или пустую строку,
+         если дело не найдено или было создано до появления этого поля."""
+-        for task in self._load()["tasks"]:
++        for task in self._load(copy_data=False)["tasks"]:
+             if task.get("id") == id_task:
+                 return task.get("created_date", '')
+         return ''
+@@ -327,7 +331,7 @@
+         show_group_title (показывать название текущей группы) хранятся
+         прямо у самой группы (groups.json), а не в общем settings.txt."""
+         groups = []
+-        for group in self._load()["groups"]:
++        for group in self._load(copy_data=False)["groups"]:
+             if not isinstance(group, dict) or not group.get("id"):
+                 continue
+             groups.append({
+@@ -403,7 +407,7 @@
+ 
+     def get_group_default_filter(self, group_id):
+         """None означает общий фильтр; disabled — явное отключение в группе."""
+-        for group in self._load()["groups"]:
++        for group in self._load(copy_data=False)["groups"]:
+             if group.get("id") == group_id:
+                 value = group.get("default_task_filter")
+                 if isinstance(value, dict):
+@@ -477,7 +481,7 @@
+ 
+     def read_notes(self, group_id):
+         """Заметки хранятся внутри группы и синхронизируются с groups.json."""
+-        for group in self._load()['groups']:
++        for group in self._load(copy_data=False)['groups']:
+             if group.get('id') == group_id and group.get('type') == 'notes':
+                 return deepcopy(group.get('notes', []))
+         return []
+--- a/Backend/extended.py
++++ b/Backend/extended.py
+@@ -253,11 +253,11 @@
+             temporary.replace(archive)
+         self._cache_custom_icons_for_page(icons)
+ 
+-    def _load(self):
+-        """Читает все секции хранилища разом в виде словаря списков словарей."""
++    def _load(self, *, copy_data=True):
++        """Использует тот же проверяемый файловый кэш, что и основной Backend."""
+         if self.web:
+             return self.store.load_all_sections()
+-        return load_all_sections(self.data_dir)
++        return load_all_sections(self.data_dir, copy_data=copy_data)
+ 
+     def _save(self, data, *, undoable=True):
+         """Сохраняет секции, перезаписывая только реально изменившиеся файлы."""
+--- a/Backend/storage.py
++++ b/Backend/storage.py
+@@ -7,16 +7,20 @@
+ и используется один раз при первом запуске приложения.
+ """
+ import json
++import os
+ import shutil
+ import threading
++from collections import OrderedDict
+ from copy import deepcopy
+ from pathlib import Path
+ from .crypto import (
+     ACCOUNT_DATA_FILENAMES, data_encryption_enabled, decrypt_bytes,
+-    encrypt_file_if_plaintext, is_encrypted, read_text, write_bytes, write_text,
++    encrypt_file_if_plaintext, file_signature, invalidate_data_encryption,
++    is_encrypted, read_text, write_bytes, write_text,
+ )
+ 
+ STORAGE_LOCK = threading.RLock()
++_SECTION_CACHE = OrderedDict()
+ 
+ 
+ def set_data_encryption(data_dir, enabled):
+@@ -43,6 +47,7 @@
+             temporary = directory / "security.json.tmp"
+             temporary.write_text(json.dumps({"encryption_enabled": enabled}), encoding="utf-8")
+             temporary.replace(directory / "security.json")
++            invalidate_data_encryption(directory)
+         except Exception:
+             for path in reversed(changed):
+                 write_bytes(path, originals[path][0], encrypt=False)
+@@ -123,26 +128,92 @@
+     return []
+ 
+ 
+-def load_section(data_dir, key):
+-    """Читает один файл секции. Возвращает корректный список даже если файла
+-    нет или он повреждён."""
+-    path = Path(data_dir) / SECTION_FILENAMES[key]
++def _remember_section(path, key, text, encrypted, signature, security_signature):
++    """Хранит отдельный снимок: вызывающий код не получает его для изменения."""
+     try:
+-        with STORAGE_LOCK:
+-            value = json.loads(read_text(path, encoding="utf-8"))
+-    except (OSError, json.JSONDecodeError):
++        value = json.loads(text) if text is not None else None
++    except json.JSONDecodeError:
+         value = None
+     if not isinstance(value, list):
+         value = _default_section(key)
+     if key == "groups":
+         _normalize_groups(value)
+-    return value
+-
+-
+-def load_all_sections(data_dir):
+-    """Читает все секции разом и возвращает словарь списков записей."""
+-    with STORAGE_LOCK:
+-        return {key: load_section(data_dir, key) for key in SECTION_FILENAMES}
++    cached = {
++        "signature": (signature, security_signature),
++        "text": text, "encrypted": encrypted, "value": value,
++    }
++    _SECTION_CACHE[path] = cached
++    _SECTION_CACHE.move_to_end(path)
++    # Нативное приложение обычно использует две папки; ограничение не даёт
++    # удерживать удалённые временные хранилища и старые снимки бесконечно.
++    if len(_SECTION_CACHE) > 128:
++        _SECTION_CACHE.popitem(last=False)
++    return cached
++
++
++def _copy_section(cached, key):
++    """Создаёт независимые JSON-объекты без обхода всего дерева через deepcopy."""
++    try:
++        value = json.loads(cached["text"]) if cached["text"] is not None else None
++    except json.JSONDecodeError:
++        value = None
++    if not isinstance(value, list):
++        value = _default_section(key)
++    return _normalize_groups(value) if key == "groups" else value
++
++
++def _read_section(data_dir, key, security_signature):
++    """Проверяет обе сигнатуры под STORAGE_LOCK перед использованием снимка."""
++    path = Path(os.path.abspath(data_dir)) / SECTION_FILENAMES[key]
++    try:
++        signature = file_signature(path)
++        cached = _SECTION_CACHE.get(path)
++        if cached is not None and cached["signature"] == (signature, security_signature):
++            _SECTION_CACHE.move_to_end(path)
++            return cached
++        _SECTION_CACHE.pop(path, None)
++        if signature is None:
++            return _remember_section(path, key, None, None, None, security_signature)
++        raw = path.read_bytes()
++        text = decrypt_bytes(raw).decode("utf-8")
++        encrypted = is_encrypted(raw)
++        stable = file_signature(path) == signature
++        # Сохраняем прежнюю автоматическую миграцию открытого JSON в AES-GCM.
++        if stable and not encrypted and data_encryption_enabled(path.parent):
++            write_text(path, text, encoding="utf-8")
++            signature = file_signature(path)
++            encrypted = True
++        cached = _remember_section(path, key, text, encrypted, signature, security_signature)
++        if not stable:
++            _SECTION_CACHE.pop(path, None)
++        return cached
++    except OSError:
++        _SECTION_CACHE.pop(path, None)
++        value = _default_section(key)
++        return {"text": None, "value": _normalize_groups(value) if key == "groups" else value}
++
++
++def load_section(data_dir, key):
++    """Читает один файл секции. Возвращает корректный список даже если файла
++    нет или он повреждён."""
++    with STORAGE_LOCK:
++        signature = file_signature(Path(data_dir) / "security.json")
++        return _copy_section(_read_section(data_dir, key, signature), key)
++
++
++def load_all_sections(data_dir, *, copy_data=True):
++    """Возвращает копию секций из кэша, проверяя внешние изменения файлов.
++
++    copy_data=False предназначен только для внутренних читающих методов:
++    такой снимок нельзя менять, в том числе его вложенные списки и словари.
++    """
++    with STORAGE_LOCK:
++        signature = file_signature(Path(data_dir) / "security.json")
++        data = {}
++        for key in SECTION_FILENAMES:
++            cached = _read_section(data_dir, key, signature)
++            data[key] = _copy_section(cached, key) if copy_data else cached["value"]
++        return data
+ 
+ 
+ def save_section(data_dir, key, value):
+@@ -154,17 +225,29 @@
+ 
+ 
+ def _save_section(data_dir, key, value):
+-    path = Path(data_dir) / SECTION_FILENAMES[key]
++    path = Path(os.path.abspath(data_dir)) / SECTION_FILENAMES[key]
+     path.parent.mkdir(parents=True, exist_ok=True)
+     new_text = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+-    if path.exists():
++    signature = file_signature(path)
++    security_signature = file_signature(path.parent / "security.json")
++    enabled = data_encryption_enabled(path.parent)
++    cached = _SECTION_CACHE.get(path)
++    if cached is not None and cached["signature"] == (signature, security_signature):
++        if cached["encrypted"] == enabled and cached["text"] == new_text:
++            return False
++    elif signature is not None:
+         try:
+-            if (is_encrypted(path.read_bytes()) == data_encryption_enabled(data_dir)
+-                    and read_text(path, encoding="utf-8") == new_text):
+-                return False
++            raw = path.read_bytes()
++            if is_encrypted(raw) == enabled:
++                text = decrypt_bytes(raw).decode("utf-8")
++                if file_signature(path) == signature:
++                    _remember_section(path, key, text, enabled, signature, security_signature)
++                    if text == new_text:
++                        return False
+         except OSError:
+             pass
+     write_text(path, new_text, encoding="utf-8")
++    _remember_section(path, key, new_text, enabled, file_signature(path), security_signature)
+     return True
+ 
+ 
+@@ -202,9 +285,13 @@
+         if key not in data:
+             continue
+         if force:
+-            path = Path(data_dir) / SECTION_FILENAMES[key]
++            path = Path(os.path.abspath(data_dir)) / SECTION_FILENAMES[key]
+             path.parent.mkdir(parents=True, exist_ok=True)
+-            write_text(path, json.dumps(data[key], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++            security_signature = file_signature(path.parent / "security.json")
++            text = json.dumps(data[key], ensure_ascii=False, indent=2) + "\n"
++            enabled = data_encryption_enabled(path.parent)
++            write_text(path, text, encoding="utf-8")
++            _remember_section(path, key, text, enabled, file_signature(path), security_signature)
+             changed.add(key)
+         elif save_section(data_dir, key, data[key]):
+             changed.add(key)
+--- a/Backend/crypto.py
++++ b/Backend/crypto.py
+@@ -3,6 +3,8 @@
+ import hashlib
+ import json
+ import os
++import threading
++from collections import OrderedDict
+ from pathlib import Path
+ 
+ from cryptography.exceptions import InvalidTag
+@@ -30,17 +32,49 @@
+     "tasks.json", "groups.json", "postponed.json", "repeat_tasks.json", "itog.json", "itog.txt",
+     "achievements.json",
+ })
++_ENCRYPTION_CACHE = OrderedDict()
++_ENCRYPTION_CACHE_LOCK = threading.RLock()
++
++
++def file_signature(path):
++    """Возвращает версию файла без чтения содержимого; None означает отсутствие."""
++    try:
++        stat = Path(path).stat()
++    except FileNotFoundError:
++        return None
++    return stat.st_mtime_ns, stat.st_size
++
++
++def invalidate_data_encryption(directory):
++    """Сбрасывает настройку после явного изменения формата хранилища."""
++    path = Path(os.path.abspath(directory)) / "security.json"
++    with _ENCRYPTION_CACHE_LOCK:
++        _ENCRYPTION_CACHE.pop(path, None)
+ 
+ 
+ def data_encryption_enabled(directory):
+-    """Читает сохранённый формат файлов дел независимо от облака."""
+-    path = Path(directory) / "security.json"
+-    if not path.exists():
+-        return True
+-    settings = json.loads(path.read_text(encoding="utf-8"))
+-    if not isinstance(settings, dict) or type(settings.get("encryption_enabled")) is not bool:
+-        raise ValueError("Некорректная локальная настройка шифрования.")
+-    return settings["encryption_enabled"]
++    """Читает формат файлов дел, переиспользуя настройку до изменения файла."""
++    path = Path(os.path.abspath(directory)) / "security.json"
++    with _ENCRYPTION_CACHE_LOCK:
++        signature = file_signature(path)
++        cached = _ENCRYPTION_CACHE.get(path)
++        if cached is not None and cached[0] == signature:
++            _ENCRYPTION_CACHE.move_to_end(path)
++            return cached[1]
++        _ENCRYPTION_CACHE.pop(path, None)
++        enabled = True
++        if signature is not None:
++            settings = json.loads(path.read_text(encoding="utf-8"))
++            if not isinstance(settings, dict) or type(settings.get("encryption_enabled")) is not bool:
++                raise ValueError("Некорректная локальная настройка шифрования.")
++            enabled = settings["encryption_enabled"]
++        # Внешняя замена во время чтения не должна закрепить старую настройку
++        # под новой сигнатурой. Следующее обращение проверит файл заново.
++        if file_signature(path) == signature:
++            _ENCRYPTION_CACHE[path] = signature, enabled
++            if len(_ENCRYPTION_CACHE) > 128:
++                _ENCRYPTION_CACHE.popitem(last=False)
++        return enabled
+ 
+ 
+ def file_encryption_enabled(path):
+--- a/Backend/cloud.py
++++ b/Backend/cloud.py
+@@ -29,6 +29,7 @@
+     decrypt_bytes,
+     encrypt_bytes,
+     encrypt_file_if_plaintext,
++    file_signature,
+     read_text as read_encrypted_text,
+     write_text as write_encrypted_text,
+ )
+@@ -790,13 +791,25 @@
+     def read_user_data_text(self):
+         if self.web:
+             return self.web_store.read_meta_text("user_data")
+-        return read_encrypted_text(self.user_data, encoding="utf-8")
++        with self.file_lock():
++            path = Path(os.path.abspath(self.user_data))
++            signature = file_signature(path)
++            cached = getattr(self, "_user_data_cache", None)
++            if cached is not None and cached[:2] == (path, signature):
++                return cached[2]
++            self._user_data_cache = None
++            text = read_encrypted_text(path, encoding="utf-8")
++            if file_signature(path) == signature:
++                self._user_data_cache = path, signature, text
++            return text
+ 
+     def write_user_data_text(self, text):
+         if self.web:
+             self.web_store.write_meta_text("user_data", text)
+         else:
+-            write_encrypted_text(self.user_data, text, encoding="utf-8")
++            with self.file_lock():
++                self._user_data_cache = None
++                write_encrypted_text(self.user_data, text, encoding="utf-8")
+         # Явный вход происходит после скачивания/создания данных аккаунта.
+         self._backup_checks_enabled = True
+         # Вход будит фоновый поток, чтобы первый бэкап не ждал таймера.
+--- a/bench_backend.py
++++ b/bench_backend.py
+@@ -1,6 +1,6 @@
+ """Замеры слоя данных на синтетических данных без сети и пользовательских файлов.
+ 
+-Запуск: python -B bench_backend.py --output bench_before.txt
++Запуск после этапа 1: python -B bench_backend.py --output bench_after.txt
+ Для диагностической печати вложенных вызовов добавьте --trace.
+ """
+ 
+@@ -235,7 +235,7 @@
+ def format_report(rows, args):
+     """Формирует таблицу, пригодную для сопоставления этапов 0 и 1."""
+     lines = [
+-        "Этап 0 — исходные замеры слоя данных (оптимизации ещё не внесены).",
++        f"{args.label} — замеры слоя данных.",
+         f"Python {platform.python_version()}, Flet {version('flet')}, cryptography {version('cryptography')}",
+         f"Платформа: {platform.system()} {platform.release()}, {platform.machine()}",
+         f"Повторов: {args.repeats}; прогревов: {args.warmup}; p95: ближайший верхний ранг.",
+@@ -281,6 +281,7 @@
+     parser.add_argument("--encryption", choices=("on", "off", "both"), default="both")
+     parser.add_argument("--account", choices=("guest", "account", "both"), default="both")
+     parser.add_argument("--trace", action="store_true")
++    parser.add_argument("--label", default="Этап 1")
+     parser.add_argument("--output", type=Path)
+     args = parser.parse_args()
+     output = args.output.resolve() if args.output else None
+--- /dev/null
++++ b/tests/test_storage_cache.py
+@@ -0,0 +1,390 @@
++"""Проверки инвалидации кэша, независимости снимков и совместимости режимов."""
++
++import json
++import os
++import threading
++from concurrent.futures import ThreadPoolExecutor
++from copy import deepcopy
++from pathlib import Path
++from unittest.mock import Mock, patch
++
++import pytest
++
++from Backend import crypto, storage
++from Backend.cloud import Cloud
++from Backend.core import Backend
++from Backend.extended import Backend2
++from Backend.webstorage import WebSessionStore
++
++
++@pytest.fixture
++def back(tmp_path):
++    """Создаёт нативное хранилище без запуска облака и обращения к cwd."""
++    backend = Backend.__new__(Backend)
++    backend.web = False
++    backend.phone = False
++    backend.page = None
++    backend.data_dir = tmp_path / "data"
++    backend.cloud = Mock()
++    backend.cloud.check_user_data.return_value = False
++    backend._undo_state = None
++    backend.on_undo_change = None
++    backend.on_data_change = None
++    data = storage.empty_data()
++    data["tasks"] = [{
++        "id": "local", "name": "Исходное дело", "group": "default",
++        "status": False, "created_date": "10-11-2026", "attachments": [],
++    }]
++    storage.save_all_sections(backend.data_dir, data, force=True)
++    storage.save_all_sections(backend.data_dir, backend._load())
++    return backend
++
++
++@pytest.fixture
++def cloud(tmp_path):
++    """Создаёт только файловый фасад авторизации, без сети и воркера."""
++    instance = Cloud.__new__(Cloud)
++    instance.web = False
++    instance.user_data = tmp_path / "user_data" / "user_data.txt"
++    instance._upload_cv = threading.Condition()
++    instance._pending_login_password = None
++    instance.connect = True
++    instance.write_user_data_text("account~~login~~password")
++    return instance
++
++
++@pytest.mark.parametrize("key", storage.SECTION_FILENAMES)
++@pytest.mark.parametrize("encrypted", (False, True))
++def test_external_section_write_invalidates_only_changed_section(back, key, encrypted):
++    records = [{"id": "remote", "name": "Изменено внешней записью"}]
++    if key == "groups":
++        records[0]["id"] = "default"
++    path = back.data_dir / storage.SECTION_FILENAMES[key]
++    plain = json.dumps(records, ensure_ascii=False).encode("utf-8")
++    path.write_bytes(crypto.encrypt_bytes(plain) if encrypted else plain)
++    with patch("Backend.storage.decrypt_bytes", wraps=crypto.decrypt_bytes) as decrypt:
++        assert back._load()[key][0]["name"] == records[0]["name"]
++        assert decrypt.call_count == 1
++        back._load()
++        assert decrypt.call_count == 1
++
++
++def test_size_change_is_detected_even_with_unchanged_mtime(back):
++    path = back.data_dir / "tasks.json"
++    before = path.stat()
++    crypto.write_text(path, '[{"id":"remote","name":"Новое"}]')
++    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
++    assert path.stat().st_mtime_ns == before.st_mtime_ns
++    assert back.get_task("remote")["name"] == "Новое"
++
++
++def test_deleted_and_recreated_section_does_not_reuse_old_snapshot(back):
++    path = back.data_dir / "tasks.json"
++    path.unlink()
++    assert back.read_tasks() == []
++    crypto.write_text(path, '[{"id":"new","name":"После удаления"}]')
++    assert back.get_task("local") is None
++    assert back.read_name("new") == "После удаления"
++
++
++def test_external_replacement_during_read_does_not_poison_new_signature(back):
++    path = back.data_dir / "tasks.json"
++    storage._SECTION_CACHE.clear()
++    original_read = Path.read_bytes
++    replaced = False
++
++    def read_and_replace(target):
++        nonlocal replaced
++        raw = original_read(target)
++        if target == path and not replaced:
++            replaced = True
++            crypto.write_text(path, '[{"id":"remote","name":"Замена во время чтения"}]')
++        return raw
++
++    with patch.object(Path, "read_bytes", read_and_replace):
++        back._load()
++    assert back.read_name("remote") == "Замена во время чтения"
++    assert back.get_task("local") is None
++
++
++def test_loaded_and_returned_nested_data_cannot_change_cache(back):
++    data = back._load()
++    data["tasks"][0]["attachments"] = [{"name": "Файл.txt", "details": {"value": 1}}]
++    back._save(data)
++    expected = back._load()
++    # Сохранённый кэш также не должен ссылаться на словарь, переданный в _save.
++    data["tasks"][0]["attachments"][0]["details"]["value"] = 2
++    for result in (back._load()["tasks"], back.read_tasks(), [back.get_task("local")]):
++        result[0]["name"] = "Несохранённое изменение"
++        result[0]["attachments"][0]["details"]["value"] = 3
++    assert back._load() == expected
++
++
++def test_reading_one_task_does_not_copy_all_sections(back):
++    with patch("Backend.storage.deepcopy", wraps=deepcopy) as copy_sections, \
++            patch("Backend.core.deepcopy", wraps=deepcopy) as copy_record, \
++            patch("Backend.storage.decrypt_bytes", wraps=crypto.decrypt_bytes) as decrypt:
++        assert back.read_name("local") == "Исходное дело"
++        assert back.read_id("Исходное дело") == "local"
++        assert back.read_created_date("local") == "10-11-2026"
++        assert back.get_quantity_strings() == 1
++        assert back.get_task("local")["id"] == "local"
++        copy_sections.assert_not_called()
++        decrypt.assert_not_called()
++        assert copy_record.call_count == 1
++
++
++def test_unchanged_save_preserves_files_and_undo(back):
++    original = back._load()
++    back.saveB("Добавленное дело")
++    undo = back._undo_state
++    paths = [back.data_dir / name for name in storage.SECTION_FILENAMES.values()]
++    before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
++    back.on_data_change = Mock()
++    back.on_undo_change = Mock()
++    with patch("Backend.storage.write_text", wraps=crypto.write_text) as write:
++        back._save(back._load())
++        write.assert_not_called()
++    assert back._undo_state is undo
++    back.on_data_change.assert_not_called()
++    back.on_undo_change.assert_not_called()
++    assert before == [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
++    assert back.undo_last_action()
++    assert back._load() == original
++
++
++def test_storage_comparison_does_not_read_warm_unchanged_files(back):
++    data = back._load()
++    with patch.object(Path, "read_bytes", side_effect=AssertionError("Повторное чтение секции")), \
++            patch("Backend.storage.write_text", side_effect=AssertionError("Лишняя запись")):
++        assert storage.save_all_sections(back.data_dir, data) == set()
++
++
++def test_compact_external_json_is_still_rewritten_to_existing_format(back):
++    path = back.data_dir / "tasks.json"
++    tasks = back.read_tasks()
++    crypto.write_text(path, json.dumps(tasks, ensure_ascii=False))
++    data = back._load()
++    assert storage.save_all_sections(back.data_dir, data) == {"tasks"}
++    assert crypto.read_text(path) == json.dumps(tasks, ensure_ascii=False, indent=2) + "\n"
++    assert storage.save_all_sections(back.data_dir, data) == set()
++
++
++def test_same_values_with_different_key_order_still_count_as_changed(back):
++    data = back._load()
++    data["tasks"][0] = dict(reversed(list(data["tasks"][0].items())))
++    assert storage.save_all_sections(back.data_dir, data) == {"tasks"}
++    assert storage.save_all_sections(back.data_dir, data) == set()
++
++
++def test_encryption_switch_and_new_writes_work_without_restart(back):
++    expected = back._load()
++    for enabled in (False, True, False, True):
++        storage.set_data_encryption(back.data_dir, enabled)
++        assert crypto.data_encryption_enabled(back.data_dir) is enabled
++        assert back._load() == expected
++        assert crypto.is_encrypted((back.data_dir / "tasks.json").read_bytes()) is enabled
++        task_id = back.saveB("После смены шифрования")
++        assert back.get_task(task_id) is not None
++        assert back.undo_last_action()
++        assert back._load() == expected
++        assert storage.save_all_sections(back.data_dir, expected) == set()
++
++
++def test_security_cache_detects_external_write_deletion_and_invalid_setting(tmp_path):
++    path = tmp_path / "security.json"
++    assert crypto.data_encryption_enabled(tmp_path) is True
++    path.write_text('{"encryption_enabled": false}', encoding="utf-8")
++    assert crypto.data_encryption_enabled(tmp_path) is False
++    with patch.object(Path, "read_text", side_effect=AssertionError("Повторное чтение security.json")):
++        assert crypto.data_encryption_enabled(tmp_path) is False
++    path.write_text('{"encryption_enabled": "False"}', encoding="utf-8")
++    with pytest.raises(ValueError, match="настройка шифрования"):
++        crypto.data_encryption_enabled(tmp_path)
++    path.unlink()
++    assert crypto.data_encryption_enabled(tmp_path) is True
++
++
++def test_security_change_invalidates_plaintext_section_snapshot(back):
++    storage.set_data_encryption(back.data_dir, False)
++    back._load()
++    (back.data_dir / "security.json").write_text('{"encryption_enabled": true}', encoding="utf-8")
++    assert back.read_name("local") == "Исходное дело"
++    assert crypto.is_encrypted((back.data_dir / "tasks.json").read_bytes())
++
++
++def test_overwriting_wrong_encryption_format_preserves_previous_error_behavior(back):
++    path = back.data_dir / "tasks.json"
++    broken = crypto.encrypt_bytes(b"[]")[:-16]
++    path.write_bytes(broken)
++    with pytest.raises(crypto.EncryptedFileError):
++        back.read_tasks()
++    # При другом целевом формате прежний save_section тоже не расшифровывал файл.
++    (back.data_dir / "security.json").write_text('{"encryption_enabled": false}', encoding="utf-8")
++    assert storage.save_section(back.data_dir, "tasks", [])
++    assert back.read_tasks() == []
++
++
++def test_undo_restores_history_and_external_write_disables_old_undo(back):
++    original = back._load()
++    back.redact_statusB("local", True)
++    assert back._load()["achievements"][0]["task_id"] == "local"
++    assert back.undo_last_action()
++    assert back._load() == original
++    back.redact_statusB("local", True)
++    remote = back._load()
++    remote["tasks"][0]["name"] = "Дело из облака"
++    crypto.write_text(back.data_dir / "tasks.json", json.dumps(remote["tasks"], ensure_ascii=False))
++    assert not back.can_undo()
++    assert not back.undo_last_action()
++    assert back.read_name("local") == "Дело из облака"
++
++
++def test_replace_import_delete_and_migration_are_visible_to_warm_cache(back):
++    archive = back.export_data_archive()
++    replacement = back._load()
++    replacement["tasks"][0]["name"] = "Замена снимка"
++    storage.replace_all_sections(back.data_dir, replacement)
++    assert back.read_name("local") == "Замена снимка"
++    back.import_data_archive(archive)
++    assert back.read_name("local") == "Исходное дело"
++    back.delete_all()
++    assert back.read_tasks() == []
++    legacy = back.data_dir / "itog.json"
++    storage.save_data(legacy, replacement)
++    for name in storage.SECTION_FILENAMES.values():
++        (back.data_dir / name).unlink()
++    storage.ensure_split_storage(back.data_dir, legacy)
++    assert back.read_name("local") == "Замена снимка"
++
++
++def test_failed_import_rolls_back_files_without_leaving_cached_partial_snapshot(back):
++    from Backend.data_archive import create_data_archive
++
++    back.saveB("Дело с доступной отменой")
++    expected = back._load()
++    replacement = back._load()
++    replacement["groups"][0]["name"] = "Незавершённый импорт"
++    save = storage.save_all_sections
++
++    def fail_after_first_section(directory, data, force=False):
++        save(directory, {"groups": data["groups"]}, force=True)
++        raise OSError("Сбой записи во время импорта")
++
++    with patch("Backend.storage.save_all_sections", side_effect=fail_after_first_section):
++        with pytest.raises(OSError):
++            back.import_data_archive(create_data_archive(replacement))
++    assert back._load() == expected
++    assert back.undo_last_action()
++    assert len(back.read_tasks()) == 1
++
++
++def test_backend2_and_shared_groups_share_invalidation(back):
++    extended = Backend2.__new__(Backend2)
++    extended.web = False
++    extended.back = back
++    extended.data_dir = back.data_dir
++    shared = Cloud.__new__(Cloud)
++    shared.web = False
++    shared.data_dir = back.data_dir
++    data = extended._load()
++    data["tasks"][0]["name"] = "Через Backend2"
++    extended._save(data)
++    assert back.read_name("local") == "Через Backend2"
++    data = shared._shared_load()
++    data["tasks"][0]["name"] = "Через общие группы"
++    shared._shared_save(data)
++    assert back.read_name("local") == "Через общие группы"
++    assert extended._load() == back._load()
++
++
++def test_parallel_readers_and_main_thread_writes_see_complete_snapshots(back):
++    started = threading.Barrier(3)
++    finished = threading.Event()
++
++    def read():
++        started.wait(timeout=10)
++        reads = 0
++        while not finished.is_set() or reads < 10:
++            data = back._load()
++            completed = data["tasks"][0]["status"]
++            recorded = any(item["task_id"] == "local" for item in data["achievements"])
++            assert completed == recorded
++            assert back.get_task("local")["name"] == "Исходное дело"
++            reads += 1
++        return reads
++
++    with ThreadPoolExecutor(max_workers=2) as executor:
++        readers = [executor.submit(read) for _ in range(2)]
++        try:
++            started.wait(timeout=10)
++            for index in range(30):
++                back.redact_statusB("local", index % 2 == 0)
++        finally:
++            finished.set()
++        assert all(reader.result(timeout=10) >= 10 for reader in readers)
++
++
++def test_authentication_cache_tracks_external_write_and_logout(cloud):
++    assert cloud.check_user_data()
++    with patch("Backend.cloud.read_encrypted_text", side_effect=AssertionError("Повторная расшифровка user_data")):
++        assert cloud.check_user_data()
++        assert cloud.read_user_data_text() == "account~~login~~password"
++    crypto.write_text(cloud.user_data, "remote~~другой~~пароль")
++    assert cloud.read_user_data_text() == "remote~~другой~~пароль"
++    with patch.object(cloud, "_restore_local_backup_to_active"):
++        cloud.leave_from_account()
++    assert not cloud.check_user_data()
++    cloud.write_user_data_text("new~~login~~password")
++    assert cloud.check_user_data()
++    assert cloud.read_user_data_text() == "new~~login~~password"
++
++
++def test_explicit_authentication_write_invalidates_even_if_signature_is_restored(cloud):
++    assert cloud.check_user_data()
++    before = cloud.user_data.stat()
++    cloud.write_user_data_text("account~~other~~password")
++    os.utime(cloud.user_data, ns=(before.st_atime_ns, before.st_mtime_ns))
++    assert cloud.user_data.stat().st_size == before.st_size
++    assert cloud.read_user_data_text() == "account~~other~~password"
++
++
++def test_web_mode_keeps_session_store_and_avoids_file_cache():
++    page = Mock(_nd_timezone="Europe/Moscow")
++    store = WebSessionStore(page)
++    cloud = Cloud.__new__(Cloud)
++    cloud.web = True
++    cloud.web_store = store
++    cloud._upload_cv = threading.Condition()
++    back = Backend(page=page, web_store=store, cloud=cloud)
++    with patch("Backend.storage.file_signature", side_effect=AssertionError("Файловый кэш в web")), \
++            patch("Backend.cloud.file_signature", side_effect=AssertionError("Файлы авторизации в web")):
++        task_id = back.saveB("В браузере")
++        back.redact_statusB(task_id, True)
++        assert back.undo_last_action()
++        assert back.get_task(task_id)["status"] is False
++        data = back._load()
++        data["tasks"][0]["name"] = "Из облака в браузер"
++        store.replace_from_cloud(data)
++        assert back.read_name(task_id) == "Из облака в браузер"
++        cloud.write_user_data_text("web~~login~~password")
++        assert cloud.check_user_data()
++        store.write_meta_text("user_data", "")
++        assert not cloud.check_user_data()
++
++
++def test_android_storage_path_and_backend2_use_the_same_cache(tmp_path, monkeypatch):
++    directory = tmp_path / "android-data"
++    monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(directory))
++    guest = Mock()
++    guest.check_user_data.return_value = False
++    backend = Backend(cloud=guest)
++    extended = Backend2(back=backend, cloud=guest)
++    assert backend.phone is True
++    assert backend.data_dir == directory
++    task_id = backend.saveB("На телефоне")
++    assert extended._load()["tasks"][0]["id"] == task_id
++    data = extended._load()
++    data["tasks"][0]["name"] = "После изменения на телефоне"
++    extended._save(data)
++    assert backend.read_name(task_id) == "После изменения на телефоне"
+--- /dev/null
++++ b/bench_after.txt
+@@ -0,0 +1,91 @@
++Этап 1 — замеры слоя данных.
++Python 3.13.5, Flet 0.82.0, cryptography 48.0.0
++Платформа: Windows 11, AMD64
++Повторов: 11; прогревов: 2; p95: ближайший верхний ранг.
++Режим: native/ПК; синтетические данные; временные cwd, saves, settings и secret.py.
++Сеть отключена; облачный воркер не работает; connect=True проверяет постановку в очередь.
++account — синтетический вход с настоящей проверкой user_data и валидацией квот.
++Перед каждой операцией: восстановление ровно N дел и прогрев backend/cloud, вне таймера.
++Время измеряется без счётчиков; затем считаются обращения одной такой же операции.
++read — успешное открытие файла для чтения через Path.open, включая security/user_data.
++sections/security/user — подмножества read; dec — вызовы decrypt_bytes; aes — реальные AES-GCM.
++write — открытия для записи, включая временные файлы; stat — вызовы Path.stat, включая exists.
++Это обращения API файлов, а не физические чтения диска; кэш ОС не сбрасывается.
++Времена отдельных методов не включают последующий alg_for_redact, Flet/Flutter и GPU.
++После каждого изменения проверены результат, история выполнения и undo.
++Консольные декораторы: отключены, чтобы печать не искажала время.
++
++N | enc | profile | operation | p50_ms | p95_ms | read | sections | security | user | dec | aes | write | stat
++--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---
++50 | on | guest | read_tasks | 0.649 | 0.852 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++50 | on | guest | saveB | 6.030 | 6.388 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++50 | on | guest | redact_statusB | 7.929 | 9.589 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++50 | on | guest | kill_taskB | 5.712 | 6.343 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++50 | on | guest | get_task | 0.518 | 0.870 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++50 | on | guest | alg_for_redact | 0.695 | 0.753 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
++50 | on | account | read_tasks | 0.643 | 0.746 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++50 | on | account | saveB | 5.679 | 6.785 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++50 | on | account | redact_statusB | 7.465 | 8.204 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++50 | on | account | kill_taskB | 6.810 | 8.569 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++50 | on | account | get_task | 0.517 | 0.819 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++50 | on | account | alg_for_redact | 0.159 | 0.283 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2
++50 | off | guest | read_tasks | 0.627 | 0.991 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++50 | off | guest | saveB | 6.510 | 8.262 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++50 | off | guest | redact_statusB | 7.937 | 8.728 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++50 | off | guest | kill_taskB | 5.708 | 7.533 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++50 | off | guest | get_task | 0.544 | 0.924 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++50 | off | guest | alg_for_redact | 0.713 | 0.827 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
++50 | off | account | read_tasks | 0.616 | 0.676 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++50 | off | account | saveB | 5.881 | 6.302 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++50 | off | account | redact_statusB | 8.024 | 8.959 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++50 | off | account | kill_taskB | 5.688 | 6.989 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++50 | off | account | get_task | 0.507 | 0.903 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++50 | off | account | alg_for_redact | 0.158 | 0.177 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2
++300 | on | guest | read_tasks | 1.025 | 2.067 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++300 | on | guest | saveB | 9.908 | 11.426 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++300 | on | guest | redact_statusB | 11.497 | 16.278 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++300 | on | guest | kill_taskB | 9.293 | 11.072 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++300 | on | guest | get_task | 0.550 | 0.652 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++300 | on | guest | alg_for_redact | 1.184 | 1.859 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
++300 | on | account | read_tasks | 1.018 | 1.591 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++300 | on | account | saveB | 9.388 | 11.450 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++300 | on | account | redact_statusB | 11.125 | 13.123 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++300 | on | account | kill_taskB | 10.279 | 20.608 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++300 | on | account | get_task | 0.582 | 0.909 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++300 | on | account | alg_for_redact | 0.170 | 0.222 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2
++300 | off | guest | read_tasks | 1.063 | 1.627 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++300 | off | guest | saveB | 9.277 | 10.296 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++300 | off | guest | redact_statusB | 10.821 | 12.119 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++300 | off | guest | kill_taskB | 9.165 | 9.478 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++300 | off | guest | get_task | 0.573 | 0.905 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++300 | off | guest | alg_for_redact | 1.043 | 1.169 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
++300 | off | account | read_tasks | 1.000 | 1.975 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++300 | off | account | saveB | 9.475 | 10.970 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++300 | off | account | redact_statusB | 11.241 | 13.078 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++300 | off | account | kill_taskB | 8.941 | 9.496 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++300 | off | account | get_task | 0.553 | 0.697 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++300 | off | account | alg_for_redact | 0.175 | 0.342 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2
++1000 | on | guest | read_tasks | 2.053 | 3.737 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++1000 | on | guest | saveB | 19.726 | 22.017 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++1000 | on | guest | redact_statusB | 21.167 | 26.131 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++1000 | on | guest | kill_taskB | 19.728 | 29.179 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++1000 | on | guest | get_task | 0.592 | 0.675 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++1000 | on | guest | alg_for_redact | 2.279 | 3.680 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
++1000 | on | account | read_tasks | 2.135 | 3.709 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++1000 | on | account | saveB | 19.493 | 21.861 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++1000 | on | account | redact_statusB | 20.979 | 22.292 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++1000 | on | account | kill_taskB | 20.083 | 28.472 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++1000 | on | account | get_task | 0.583 | 1.171 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++1000 | on | account | alg_for_redact | 0.186 | 0.360 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2
++1000 | off | guest | read_tasks | 2.073 | 4.021 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++1000 | off | guest | saveB | 19.638 | 26.208 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++1000 | off | guest | redact_statusB | 21.214 | 24.444 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++1000 | off | guest | kill_taskB | 19.938 | 21.478 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++1000 | off | guest | get_task | 0.603 | 0.861 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++1000 | off | guest | alg_for_redact | 2.065 | 2.950 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
++1000 | off | account | read_tasks | 2.049 | 2.544 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++1000 | off | account | saveB | 19.444 | 22.710 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++1000 | off | account | redact_statusB | 21.138 | 28.677 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
++1000 | off | account | kill_taskB | 20.575 | 41.891 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
++1000 | off | account | get_task | 0.646 | 1.164 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
++1000 | off | account | alg_for_redact | 0.184 | 0.425 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2
+--- /dev/null
++++ b/bench_stage1_report.md
+@@ -0,0 +1,32 @@
++Этап 1 выполнен: кэш слоя данных.
++
++Общий ограниченный кэш storage.py хранит JSON-текст и отдельные разобранные снимки секций. Перед использованием проверяются (st_mtime_ns, st_size) файла секции и security.json. Backend, Backend2 и общие группы используют один кэш под STORAGE_LOCK. После записи обновляются текст и сигнатура; неизменённые секции сохраняют прежние байты, mtime и сигнал changed=False.
++
++Для изменения возвращаются независимые объекты из закэшированного JSON. Читающие методы используют внутренний снимок; get_task копирует только найденную запись, включая вложенные данные. Два снимка undo, история выполнения, проверки квот, формат файлов и AES-GCM сохранены.
++
++Настройка шифрования кэшируется по сигнатуре security.json; явное переключение сбрасывает её кэш. Авторизация кэшируется по сигнатуре user_data.txt под тем же файловым локом, запись и выход из аккаунта сбрасывают результат. WebSessionStore продолжает работать без файлового кэша.
++
++Сравнение медиан, мс: native/ПК, гостевой режим, шифрование включено; 11 повторов после двух прогревов. Чтения и AES указаны на одну операцию и одинаковы для всех трёх размеров. Время измерялось без счётчиков и фонового тестового прогона.
++
++| Операция | 50 дел: до → после | 300 дел: до → после | 1000 дел: до → после | Чтения: до → после | AES: до → после |
++|---|---:|---:|---:|---:|---:|
++| `read_tasks` | 0.818 → 0.649 | 1.322 → 1.025 | 3.060 → 2.053 | 5 → 0 | 5 → 0 |
++| `saveB` | 7.750 → 6.030 | 11.634 → 9.908 | 23.795 → 19.726 | 27 → 0 | 16 → 0 |
++| `redact_statusB` | 9.042 → 7.929 | 13.248 → 11.497 | 25.474 → 21.167 | 28 → 0 | 16 → 0 |
++| `kill_taskB` | 7.606 → 5.712 | 11.519 → 9.293 | 23.249 → 19.728 | 27 → 0 | 16 → 0 |
++| `get_task` | 0.835 → 0.518 | 1.329 → 0.550 | 2.877 → 0.592 | 5 → 0 | 5 → 0 |
++| `alg_for_redact` | 0.995 → 0.695 | 1.371 → 1.184 | 2.781 → 2.279 | 6 → 0 | 6 → 0 |
++
++Полные 72 исходных результата: [bench_before.txt](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/bench_before.txt>); после оптимизации: [bench_after.txt](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/bench_after.txt>). В обоих профилях авторизации и обоих режимах шифрования все операции имеют 0 чтений содержимого и 0 расшифровок на тёплом кэше. Число записей совпало с исходным для всех 72 строк. Проверки stat остаются: это не нулевое число обращений к файловой системе.
++
++Проверки: 32 новых теста кэша прошли; полный прогон — 558 passed, 11 failed, 1810 subtests passed. Список 11 падений точно совпал с этапом 0. python -m compileall Frontend Backend и проверка diff на пробелы завершились успешно.
++
++Тесты: [tests/test_storage_cache.py](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/tests/test_storage_cache.py>). Полный журнал: [artifacts/stage1/pytest_stage1.txt](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage1/pytest_stage1.txt>). Diff только этапа 1 относительно рабочего состояния после этапа 0: [bench_stage1.diff](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/bench_stage1.diff>).
++
++Проверены внешняя запись всех пяти секций, удаление и повторное создание файлов, изменение размера с сохранением mtime, замена файла во время чтения, независимость вложенных объектов, отсутствие лишних записей, JSON-формат и порядок ключей, история выполнения и undo, включение/отключение шифрования, авторизация и выход, общие группы, импорт с откатом сбоя, миграции, удаление всех данных, параллельные чтения и запись, Android-пути и web-store.
++
++Ограничения: одинаковые mtime и размер не позволяют распознать внешнюю замену по заданной сигнатуре. Сериализация, два снимка undo и реальные записи остаются. Числа измеряют backend, не полный отклик Flutter. Облачные автотесты подменяют Dropbox; настоящий аккаунт, телефон и браузер интерактивно не запускались.
++
++Вручную в приложении: проверить отметку/добавление/удаление на 1000 дел и undo; получение изменений с другого устройства и общие группы; импорт/экспорт и переключение шифрования без перезапуска; выход и повторный вход; сохранение и обновление данных в web-режиме.
++
++Реальные saves/, settings/ и secret.py не использовались. Все данные замеров и тестов синтетические. Код интерфейса на этом этапе не менялся.

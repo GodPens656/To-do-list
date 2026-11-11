@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
@@ -149,7 +150,9 @@ class ClipboardAttachmentTests(unittest.TestCase):
         rotate = dialog.actions[0]
         for size in ((40, 30), (30, 40), (40, 30), (30, 40)):
             asyncio.run(rotate.on_click(None))
-            with Image.open(BytesIO(preview.src)) as rendered:
+            self.assertTrue(preview.src.startswith("data:image/png;base64,"))
+            raw = base64.b64decode(preview.src.split(",", 1)[1], validate=True)
+            with Image.open(BytesIO(raw)) as rendered:
                 self.assertEqual(rendered.size, size)
         self.assertEqual(image, original)
         self.assertFalse(rotate.disabled)

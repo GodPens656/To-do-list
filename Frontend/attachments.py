@@ -1,7 +1,9 @@
-"""Attachment editor and shared preview/download buttons."""
+"""Attachment editor and shared preview, download and external-app actions."""
 
 import asyncio
+import base64
 from copy import deepcopy
+import mimetypes
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +16,7 @@ from Backend.attachments import (
 from Backend.clipboard import (
     clipboard_export_path, clipboard_image_png, copy_windows_image, desktop_clipboard_image,
 )
+from Backend.file_open import open_linux_file, open_windows_file
 
 
 def file_picker(page):
@@ -63,6 +66,32 @@ async def copy_attachment(libs, attachment):
         await clipboard(page).set_image(content)
 
 
+async def open_attachment(libs, attachment):
+    """Export original bytes only when the user requests an external app."""
+    page = libs.page
+    if page.web:
+        raise NotImplementedError("Сначала скачайте файл на устройство.")
+    if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX):
+        path = await asyncio.to_thread(clipboard_export_path, attachment)
+        opener = open_windows_file if page.platform == ft.PagePlatform.WINDOWS else open_linux_file
+        await asyncio.to_thread(opener, path)
+        return
+    share = getattr(page, "_nd_attachment_share", None)
+    if not isinstance(share, ft.Share):
+        share = page._nd_attachment_share = ft.Share()
+        page.services.append(share)
+        page.update()
+    name = attachment_name(attachment.get("name"))
+    content = await asyncio.to_thread(attachment_bytes, attachment)
+    await share.share_files(
+        [ft.ShareFile.from_bytes(content, name=name,
+                                mime_type=mimetypes.guess_type(name)[0] or "application/octet-stream")],
+        title="Открыть в другом приложении",
+        share_position_origin=ft.Offset((page.width or 360) / 2, (page.height or 800) / 2),
+        download_fallback_enabled=False,
+    )
+
+
 def prepare_attachments(selected, existing, *, web):
     """Validate metadata before reading local files; keep reads bounded."""
     for item in selected:
@@ -81,6 +110,15 @@ def prepare_attachments(selected, existing, *, web):
             raise ValueError("Общий размер вложений одной записи не должен превышать 20 МБ.")
         pending.append(attachment)
     return pending
+
+
+def preview_source(content, *, web):
+    # MessagePack binary values can be views into a larger byte buffer. Flutter's
+    # fallback web decoder (Firefox/Safari) may try to decode that entire buffer.
+    # A data URI gives the decoder its own PNG bytes, including after rotation.
+    if web:
+        return "data:image/png;base64," + base64.b64encode(content).decode("ascii")
+    return content
 
 
 def attachment_controls(libs, attachments, on_remove=None):
@@ -113,6 +151,31 @@ def attachment_controls(libs, attachments, on_remove=None):
         except (OSError, ValueError, RuntimeError) as error:
             libs.open_dialog("Не удалось скачать файл", str(error), page)
 
+    async def open_in_app(attachment):
+        if page.web:
+            async def save_and_close(_):
+                page.pop_dialog()
+                await download(attachment)
+
+            page.show_dialog(libs.prepare(ft.AlertDialog(
+                title=libs.create_dialog_title("Открыть в другом приложении"),
+                content=ft.Text(
+                    "Скачайте файл, затем откройте его из загрузок устройства. "
+                    "Чтобы выбрать программу, используйте «Открыть с помощью».",
+                    color=libs.TxtColor,
+                ),
+                actions=[
+                    ft.TextButton("Скачать файл", icon=ft.Icons.DOWNLOAD_ROUNDED,
+                                  on_click=save_and_close),
+                    ft.TextButton("Отмена", on_click=lambda _: page.pop_dialog()),
+                ],
+            )))
+            return
+        try:
+            await open_attachment(libs, attachment)
+        except (OSError, ValueError, RuntimeError, NotImplementedError) as error:
+            libs.open_dialog("Не удалось открыть файл", str(error), page)
+
     def preview(attachment):
         try:
             content = image_preview(attachment)
@@ -124,7 +187,7 @@ def attachment_controls(libs, attachments, on_remove=None):
         phone = libs.phone or page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS)
         preview_width = min(900, max(200, (page.width or 360) - 80))
         preview_height = max(150, min(650, (page.height or 800) - (380 if phone else 220)))
-        image = ft.Image(src=content, fit=ft.BoxFit.CONTAIN,
+        image = ft.Image(src=preview_source(content, web=page.web), fit=ft.BoxFit.CONTAIN,
                          width=preview_width, height=preview_height)
         # Leave alignment unset: Flet 0.82 forwards it without decoding.
         viewer = ft.InteractiveViewer(
@@ -168,7 +231,7 @@ def attachment_controls(libs, attachments, on_remove=None):
             page.update()
             try:
                 rotated = await asyncio.to_thread(image_preview, attachment, (turns + 1) % 4)
-                image.src = rotated
+                image.src = preview_source(rotated, web=page.web)
                 turns = (turns + 1) % 4
             except (OSError, ValueError, SyntaxError) as error:
                 libs.open_dialog("Не удалось повернуть изображение", str(error), page)
@@ -201,7 +264,7 @@ def attachment_controls(libs, attachments, on_remove=None):
         else:
             preview_controls.extend([zoom_controls, zoom_hint])
         page.show_dialog(libs.prepare(ft.AlertDialog(
-            title=ft.Text(attachment.get("name", "Изображение"), no_wrap=False),
+            title=libs.create_dialog_title(attachment.get("name", "Изображение")),
             content=ft.Container(
                 content=ft.Column(preview_controls, spacing=4),
                 width=preview_width,
@@ -224,6 +287,12 @@ def attachment_controls(libs, attachments, on_remove=None):
             icon_color=libs.FletIconColor,
             on_click=lambda _, a=attachment: page.run_task(download, a),
         ))
+        if not attachment.get("is_image"):
+            buttons.append(ft.IconButton(
+                icon=ft.Icons.OPEN_IN_NEW_ROUNDED, tooltip="Открыть в другом приложении",
+                icon_color=libs.FletIconColor,
+                on_click=lambda _, a=attachment: page.run_task(open_in_app, a),
+            ))
         if attachment.get("is_image") or (not page.web and not libs.phone):
             buttons.append(ft.IconButton(
                 icon=ft.Icons.COPY_ROUNDED, tooltip="Скопировать файл в буфер обмена",

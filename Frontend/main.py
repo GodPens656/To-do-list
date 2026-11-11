@@ -11,6 +11,7 @@ from .controls import LazyListView
 from Backend.core import local_today
 from .info import Utils3
 from .attachments import AttachmentEditor
+from .loading import LoadingScreen
 
 
 ALL_TASKS_GROUP_ID = "__all_tasks__"
@@ -65,6 +66,7 @@ class MainWidgets(Utils3):
         self.button_add_task= self.libs.build_button_with_image(
             'plusS', 'Добавить новое дело', size=48, compact=False
         )
+        self.button_add_task._nd_planner_primary = True
 
         self.settings = self.libs.build_button_with_image(
             'settings', 'Настройки', size=48, compact=False
@@ -122,9 +124,11 @@ class MainWidgets(Utils3):
         self.auth_btn.on_click = self.open_auth_dialog
         self.upd_btn.on_click = self.update_and_show_groups
 
+        progress_width = float("inf") if self.libs.glass_mobile else None
         if self.phone:
             self.upload_progress = ft.ProgressBar(
                 visible=False,
+                width=progress_width,
                 color=self.ProgressColor,
                 bgcolor=self.ProgressBgColor,
                 height=4,
@@ -139,11 +143,13 @@ class MainWidgets(Utils3):
             )
         self.upload_progress_cont = ft.Container(
             content=self.upload_progress,
+            width=progress_width,
             padding=ft.Padding.only(top=8),
             visible=False,
         )
         self.groups_progress = ft.ProgressBar(
             visible=False,
+            width=progress_width,
             height=4,
             color=self.ProgressColor,
             bgcolor=self.ProgressBgColor,
@@ -151,6 +157,7 @@ class MainWidgets(Utils3):
         )
         self.groups_progress_cont = ft.Container(
             content=self.groups_progress,
+            width=progress_width,
             padding=ft.Padding.only(top=8),
             visible=False,
         )
@@ -168,6 +175,7 @@ class MainWidgets(Utils3):
             text=stxt,
         )
         self.search_btn.on_click=self.open_search
+        self.search_btn.style.icon_size = 24
         self.search_field = ft.TextField(
             value="",
             hint_text="Найти дело…",
@@ -188,12 +196,18 @@ class MainWidgets(Utils3):
             tooltip="Закрыть поиск",
             visible=False,
             on_click=self.close_search,
+            width=44, height=44,
+            icon_size=28 if self.phone else 32,
+            style=ft.ButtonStyle(padding=4),
         )
         self.filter_btn = ft.IconButton(
             icon=ft.Icons.FILTER_ALT,
             icon_color=self.libs.FletIconColor,
             tooltip="Фильтр дел",
             on_click=self.open_task_filter_dialog,
+            width=44, height=44,
+            icon_size=24,
+            style=ft.ButtonStyle(padding=4),
         )
         if self.phone:
             # На телефоне — первая строка в контейнере с делами.
@@ -349,13 +363,10 @@ class MainWidgets(Utils3):
             content=LazyListView(
                 [spacer], spacing=8, scroll=ft.ScrollMode.AUTO,
                 build_controls_on_demand=True, expand=True,
-                # Keep Android's automatic system inset out of the task panel.
-                padding=0 if self.phone else None,
+                # The screen edge padding is the only horizontal card inset.
+                padding=0,
             ),
-            bgcolor=self.ContBgColor,
-            border=ft.Border.all(1, self.colors["SoftBorderColor"]),
-            border_radius=16,
-            padding=10 if self.phone else 16,
+            padding=ft.Padding.symmetric(vertical=10 if self.phone else 16),
             expand=True,
         )
 
@@ -366,7 +377,7 @@ class MainWidgets(Utils3):
         )
         self.task_summary = ft.Text("", size=self.libs.text_size(13), color=self.colors["MutedColor"])
         self.task_progress = ft.ProgressBar(
-            value=0, height=4, border_radius=4,
+            value=0, height=6, border_radius=3,
             color=self.colors["ProgressColor"],
             bgcolor=self.colors["ProgressBgColor"],
         )
@@ -384,8 +395,8 @@ class MainWidgets(Utils3):
 
         if self.phone:
             self.main_cont = self.libs.host(
-                # Applies above the tabs or the task body, whichever is first.
-                padding=ft.Padding.only(top=self.libs.height_for_dlg_spacer),
+                # На сайте дополнительный отступ над вкладками не нужен.
+                padding=ft.Padding.only(top=0 if self.libs.web else self.libs.height_for_dlg_spacer),
                 content=ft.Column(
                     controls=leading_controls + [
                         overview,
@@ -413,38 +424,7 @@ class MainWidgets(Utils3):
         return self.main_cont, self.btns_cont, self.tasks_cont
 
     def build_loading_widget(self):
-        """Виджет загрузки"""
-        text_loading = """Загрузка"""
-
-        main = ft.Container(
-            content=ft.Column(
-                [
-                    ft.ProgressRing(color=self.TxtColor),
-                    ft.Text(
-                        text_loading,
-                        size=self.libs.text_size(16),
-                        weight=ft.FontWeight.W_700,
-                        color=self.TxtColor,
-                    ),
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            bgcolor=self.LoadColor,
-            border=ft.Border.all(0.5, self.BorderColor),
-            border_radius=10,
-            padding=30,
-            height=150,
-        )
-
-        # Контейнер растягивается на всю страницу и центрирует содержимое
-        # и по горизонтали, и по вертикали (раньше окно оставалось в
-        # верхнем углу, т.к. не было expand=True и alignment=CENTER).
-        itog = self.libs.host(
-            content=main,
-            alignment=ft.Alignment.CENTER,
-            expand=True,
-        )
-
-        return itog
+        """Индикатор с отдельной декоративной игрой для долгой загрузки."""
+        return LoadingScreen(self.libs)
 
 __all__ = ["MainWidgets", "Utils3"]

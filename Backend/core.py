@@ -6,13 +6,15 @@ from textwrap import fill
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .cloud import Cloud
-from .storage import load_all_sections, save_all_sections, empty_data, ensure_split_storage
+from .storage import load_all_sections, save_all_sections, empty_data, ensure_split_storage, STORAGE_LOCK
 from .json_migration import migrate_legacy_storage
-from .validation import text_length_error
+from .validation import MAX_GROUP_NAME_LENGTH, text_length_error
 from .attachments import validate_account_quota
 from .achievements import achievement_summary, update_completion_history
 from .data_archive import create_data_archive, read_data_archive
 from .storage import replace_all_sections
+from .ordering import OrderingMixin
+from .timing import timed
 
 
 DEFAULT_WEB_TIMEZONE = "Europe/Moscow"
@@ -43,7 +45,8 @@ def local_today(web=False, page=None):
     """Return the client's current calendar date."""
     return local_now(web, page).date()
 
-class Backend:
+
+class Backend(OrderingMixin):
     def __init__(self, page=None, web_store=None, cloud=None):
         super().__init__()
         self.page = page
@@ -87,30 +90,38 @@ class Backend:
         ensure_split_storage(self.data_dir, self.Save_in_time)
         self.cloud = cloud or Cloud(web_store=web_store)
 
-    def _load(self):
-        """Читает все секции хранилища (tasks/repeat_tasks/postponed/groups)
-        разом в виде словаря списков словарей."""
+    @timed
+    def _load(self, *, copy_data=True):
+        """Получает секции из общего кэша, проверяемого по сигнатурам файлов.
+
+        Для изменения всегда нужна копия; copy_data=False используется
+        только внутри читающих методов, не меняющих вложенные записи.
+        """
         if self.web:
             return self.store.load_all_sections()
-        return load_all_sections(self.data_dir)
+        return load_all_sections(self.data_dir, copy_data=copy_data)
 
+    @timed
     def _save(self, data, *, undoable=True):
         """Сохраняет секции. На ПК/Android — перезаписывая только реально
         изменившиеся файлы. На сайте — в браузере посетителя (в фоне)."""
-        previous = self._load()
-        if previous == data:
-            return
-        if undoable:
-            update_completion_history(
-                previous, data, local_today(self.web, getattr(self, "page", None)),
-            )
-        if self.is_authenticated():
-            validate_account_quota(previous, data)
-        if self.web:
-            self.store.save_all_sections(data)
-        else:
-            save_all_sections(self.data_dir, data)
-        self._undo_state = (deepcopy(previous), deepcopy(data)) if undoable else None
+        # Облачный воркер не должен прочитать половину нового снимка или
+        # сменить файлы между проверкой previous и сохранением секций.
+        with (self.store.data_lock() if self.web else STORAGE_LOCK):
+            previous = self._load(copy_data=False)
+            if previous == data:
+                return
+            if undoable:
+                update_completion_history(
+                    previous, data, local_today(self.web, getattr(self, "page", None)),
+                )
+            if self.is_authenticated():
+                validate_account_quota(previous, data)
+            if self.web:
+                self.store.save_all_sections(data)
+            else:
+                save_all_sections(self.data_dir, data)
+            self._undo_state = (deepcopy(previous), deepcopy(data)) if undoable else None
         self._notify_undo_change()
 
         callback = getattr(self, 'on_data_change', None)
@@ -170,7 +181,7 @@ class Backend:
     def can_undo(self):
         state = getattr(self, '_undo_state', None)
         # Never overwrite newer data received from the cloud or another client.
-        return state is not None and self._load() == state[1]
+        return state is not None and self._load(copy_data=False) == state[1]
 
     def undo_last_action(self):
         if not self.can_undo():
@@ -181,23 +192,21 @@ class Backend:
         return True
 
     def get_quantity_strings(self):
-        return len(self._load()["tasks"])
+        return len(self._load(copy_data=False)["tasks"])
 
     def get_achievements(self):
         return achievement_summary(
-            self._load(), local_today(self.web, getattr(self, "page", None)),
+            self._load(copy_data=False), local_today(self.web, getattr(self, "page", None)),
         )
 
     def read_tasks(self):
         """Возвращает обычные дела в виде списка словарей
         {id, name, status, group, is_repeat, created_date}.
         В названиях восстанавливаются сохранённые ручные переносы строк."""
-        tasks = []
-        for stored_task in self._load()["tasks"]:
-            task = stored_task.copy()
+        tasks = self._load()["tasks"]
+        for task in tasks:
             if isinstance(task.get("name"), str):
                 task["name"] = task["name"].replace('{N}', '\n')
-            tasks.append(task)
         return tasks
 
     def saveB(self, name, group_id='default', is_repeat=False, created_date=None,
@@ -243,9 +252,9 @@ class Backend:
         self._save(data)
 
     def get_task(self, id_task):
-        for task in self._load()["tasks"]:
+        for task in self._load(copy_data=False)["tasks"]:
             if task.get("id") == id_task:
-                return task.copy()
+                return deepcopy(task)
         return None
 
     def redact_taskB(self, id_task, new_name, metadata=None):
@@ -280,7 +289,7 @@ class Backend:
 
     def read_id(self, name_of_task):
         name_of_task = name_of_task.replace('\n', '{N}')
-        for task in self._load()["tasks"]:
+        for task in self._load(copy_data=False)["tasks"]:
             if task.get("name") == name_of_task:
                 return task.get("id")
 
@@ -292,14 +301,14 @@ class Backend:
         self._save(data, undoable=False)
 
     def read_name(self, id_task):
-        for task in self._load()["tasks"]:
+        for task in self._load(copy_data=False)["tasks"]:
             if task.get("id") == id_task:
                 return str(task.get("name", "")).replace('{N}', '\n')
 
     def read_created_date(self, id_task):
         """Возвращает дату создания дела (ДД-ММ-ГГГГ) или пустую строку,
         если дело не найдено или было создано до появления этого поля."""
-        for task in self._load()["tasks"]:
+        for task in self._load(copy_data=False)["tasks"]:
             if task.get("id") == id_task:
                 return task.get("created_date", '')
         return ''
@@ -322,7 +331,7 @@ class Backend:
         show_group_title (показывать название текущей группы) хранятся
         прямо у самой группы (groups.json), а не в общем settings.txt."""
         groups = []
-        for group in self._load()["groups"]:
+        for group in self._load(copy_data=False)["groups"]:
             if not isinstance(group, dict) or not group.get("id"):
                 continue
             groups.append({
@@ -398,7 +407,7 @@ class Backend:
 
     def get_group_default_filter(self, group_id):
         """None означает общий фильтр; disabled — явное отключение в группе."""
-        for group in self._load()["groups"]:
+        for group in self._load(copy_data=False)["groups"]:
             if group.get("id") == group_id:
                 value = group.get("default_task_filter")
                 if isinstance(value, dict):
@@ -447,7 +456,7 @@ class Backend:
             self._save(data, undoable=False)
 
     def create_group(self, name, split_by_dates=True, show_created_date=True, group_type='tasks'):
-        if text_length_error(name):
+        if text_length_error(name, MAX_GROUP_NAME_LENGTH):
             return None
         name = name.strip()
         if not name or '|' in name or '---' in name or group_type not in ('tasks', 'notes'):
@@ -472,7 +481,7 @@ class Backend:
 
     def read_notes(self, group_id):
         """Заметки хранятся внутри группы и синхронизируются с groups.json."""
-        for group in self._load()['groups']:
+        for group in self._load(copy_data=False)['groups']:
             if group.get('id') == group_id and group.get('type') == 'notes':
                 return deepcopy(group.get('notes', []))
         return []
@@ -518,7 +527,7 @@ class Backend:
         return False
 
     def rename_group(self, group_id, name):
-        if text_length_error(name):
+        if text_length_error(name, MAX_GROUP_NAME_LENGTH):
             return False
         name = name.strip()
         if not name or '|' in name or '---' in name:

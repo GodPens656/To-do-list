@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import flet as ft
 
 from Backend.extended import Backend2
+from Frontend.glass import glass_gradient
 from Frontend.layout import ACTION_PANEL_OPTIONS, GROUP_PANEL_OPTIONS
 from test_glass import walk_controls
 from test_ui_state import make_front
@@ -42,6 +43,7 @@ class PanelLayoutTests(unittest.TestCase):
                 for position, _ in ACTION_PANEL_OPTIONS:
                     for groups_position, _ in GROUP_PANEL_OPTIONS:
                         with self.subTest(phone=phone, effect=effect, position=position, groups=groups_position):
+                            mobile_toolbar = phone and effect == "liquid_glass_half"
                             front = make_front(phone=phone, effect=effect, settings={
                                 "action_panel_position": position, "group_panel_position": groups_position,
                             })
@@ -52,15 +54,39 @@ class PanelLayoutTests(unittest.TestCase):
                                 self.assertIn(id(action), [id(c) for c in controls])
                             self.assertIs(front.main_cont.content.controls[0 if groups_position == "top" else -2],
                                           front.group_tabs)
+                            if effect == "none":
+                                self.assertEqual(front.btns_cont.bgcolor, front.libs.ContBgColor)
+                                self.assertIsNone(front.btns_cont.gradient)
+                            else:
+                                self.assertIsNone(front.btns_cont.bgcolor)
+                                self.assertEqual(front.btns_cont.gradient,
+                                                 glass_gradient(front.theme, mobile=phone, toolbar=mobile_toolbar))
+                            for attribute in ("blur", "shadow", "foreground_decoration"):
+                                if mobile_toolbar and attribute != "blur":
+                                    self.assertIsNotNone(getattr(front.btns_cont, attribute))
+                                else:
+                                    self.assertIsNone(getattr(front.btns_cont, attribute))
                             if effect == "liquid_glass_half":
                                 self.assertEqual(sum(isinstance(c, ft.Container) and c.blur is not None
-                                                     for c in controls), 1)
+                                                     for c in controls), 0)
                             self.assertTrue(front.tasks_cont.content.build_controls_on_demand)
                             front.open_group_management()
                             front.libs.prepare(front._groups_screen)
                             self.assertTrue(front._groups_column.expand)
                             self.assertTrue(front._groups_column.build_controls_on_demand)
                             group_controls = walk_controls(front._groups_screen)
+                            if effect == "none":
+                                self.assertEqual(front.groups_btns_cont.bgcolor, front.libs.ContBgColor)
+                                self.assertIsNone(front.groups_btns_cont.gradient)
+                            else:
+                                self.assertIsNone(front.groups_btns_cont.bgcolor)
+                                self.assertEqual(front.groups_btns_cont.gradient,
+                                                 glass_gradient(front.theme, mobile=phone, toolbar=mobile_toolbar))
+                            for attribute in ("blur", "shadow", "foreground_decoration"):
+                                if mobile_toolbar and attribute != "blur":
+                                    self.assertIsNotNone(getattr(front.groups_btns_cont, attribute))
+                                else:
+                                    self.assertIsNone(getattr(front.groups_btns_cont, attribute))
                             self.assertIn(front.groups_undo_btn, group_controls)
                             for control in group_controls:
                                 if isinstance(control, (ft.Column, ft.Row)):

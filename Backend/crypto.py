@@ -3,6 +3,8 @@
 import hashlib
 import json
 import os
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
@@ -30,21 +32,55 @@ ACCOUNT_DATA_FILENAMES = frozenset({
     "tasks.json", "groups.json", "postponed.json", "repeat_tasks.json", "itog.json", "itog.txt",
     "achievements.json",
 })
+_ENCRYPTION_CACHE = OrderedDict()
+_ENCRYPTION_CACHE_LOCK = threading.RLock()
+
+
+def file_signature(path):
+    """Возвращает версию файла без чтения содержимого; None означает отсутствие."""
+    try:
+        stat = Path(path).stat()
+    except FileNotFoundError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def invalidate_data_encryption(directory):
+    """Сбрасывает настройку после явного изменения формата хранилища."""
+    path = Path(os.path.abspath(directory)) / "security.json"
+    with _ENCRYPTION_CACHE_LOCK:
+        _ENCRYPTION_CACHE.pop(path, None)
 
 
 def data_encryption_enabled(directory):
-    """Читает сохранённый формат файлов дел независимо от облака."""
-    path = Path(directory) / "security.json"
-    if not path.exists():
-        return True
-    settings = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(settings, dict) or type(settings.get("encryption_enabled")) is not bool:
-        raise ValueError("Некорректная локальная настройка шифрования.")
-    return settings["encryption_enabled"]
+    """Читает формат файлов дел, переиспользуя настройку до изменения файла."""
+    path = Path(os.path.abspath(directory)) / "security.json"
+    with _ENCRYPTION_CACHE_LOCK:
+        signature = file_signature(path)
+        cached = _ENCRYPTION_CACHE.get(path)
+        if cached is not None and cached[0] == signature:
+            _ENCRYPTION_CACHE.move_to_end(path)
+            return cached[1]
+        _ENCRYPTION_CACHE.pop(path, None)
+        enabled = True
+        if signature is not None:
+            settings = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(settings, dict) or type(settings.get("encryption_enabled")) is not bool:
+                raise ValueError("Некорректная локальная настройка шифрования.")
+            enabled = settings["encryption_enabled"]
+        # Внешняя замена во время чтения не должна закрепить старую настройку
+        # под новой сигнатурой. Следующее обращение проверит файл заново.
+        if file_signature(path) == signature:
+            _ENCRYPTION_CACHE[path] = signature, enabled
+            if len(_ENCRYPTION_CACHE) > 128:
+                _ENCRYPTION_CACHE.popitem(last=False)
+        return enabled
 
 
 def file_encryption_enabled(path):
     path = Path(path)
+    if path.name == "settings.txt":
+        return False
     return data_encryption_enabled(path.parent) if path.name in ACCOUNT_DATA_FILENAMES else True
 
 
@@ -83,7 +119,8 @@ def read_bytes(path):
     path = Path(path)
     raw = path.read_bytes()
     plain = decrypt_bytes(raw)
-    if not is_encrypted(raw) and file_encryption_enabled(path):
+    needs_decryption = path.name == "settings.txt" and is_encrypted(raw)
+    if needs_decryption or (not is_encrypted(raw) and file_encryption_enabled(path)):
         write_bytes(path, plain)
     return plain
 

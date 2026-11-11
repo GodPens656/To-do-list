@@ -1,6 +1,6 @@
 """Создание, редактирование и показ заметок внутри группы."""
 
-from .attachments import AttachmentEditor
+from .attachments import AttachmentEditor, clipboard
 
 class NotesMixin:
     def open_note_editor(self, note=None):
@@ -48,6 +48,10 @@ class NotesMixin:
         self.open_page(dialog['Header'], dialog['Main Cont'], dialog['cancel'], 'note')
 
     def _render_notes(self, group_settings, *, notes=None):
+        for _ in self._iter_note_cards(group_settings, notes=notes):
+            pass
+
+    def _iter_note_cards(self, group_settings, *, notes=None):
         if notes is None:
             notes = self.back.read_notes(self.current_group_id)
         last_date = None
@@ -56,14 +60,29 @@ class NotesMixin:
             if group_settings['split_by_dates'] and last_date is not None and created_date != last_date:
                 self.to_task_content(self.create_date_divider())
             last_date = created_date
+
+            async def copy_note_text(_, note_id=note['id'], group_id=self.current_group_id):
+                current_note = next((n for n in self.back.read_notes(group_id) if n['id'] == note_id), None)
+                if current_note is None:
+                    return
+                try:
+                    await clipboard(self.page).set(current_note['text'])
+                except Exception:
+                    self.libs.open_dialog(
+                        "Копирование заметки", "Не удалось скопировать текст заметки в буфер обмена.",
+                        self.page,
+                    )
+
             card, delete, edit, text, _ = self.utils.create_row_with_task(
                 self.back.auto_add_new_string(note['text']), False, note['id'],
                 created_date, self.current_group_id, show_checkbox=False,
                 group_settings=group_settings,
                 attachments=note.get('attachments'),
+                on_copy=copy_note_text,
             )
             card.data = note['text']
-            text.selectable = True
+            card.key = note['id']
+            self._bind_record_reordering(card)
             edit.tooltip = "Редактировать заметку"
             edit.on_click = lambda _, n=note: self.open_note_editor(n)
             delete.tooltip = "Удалить заметку"
@@ -76,6 +95,7 @@ class NotesMixin:
 
             delete.on_click = delete_note
             self.to_task_content(card)
+            yield
 
     def _refresh_notes_overview(self, total, shown):
         self.task_summary.value = (

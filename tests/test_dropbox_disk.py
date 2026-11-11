@@ -3,7 +3,9 @@ import io
 import os
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +29,7 @@ def content_hash(payload):
 class DropboxDiskTests(unittest.TestCase):
     def setUp(self):
         self.client = Mock()
+        self.client.clone.return_value = self.client
         self.disk = DropboxDisk()
         self.disk._client = self.client
 
@@ -136,6 +139,87 @@ class DropboxDiskTests(unittest.TestCase):
         metadata.rev = "abcdef123"
         result = self.disk.download("/shared/tasks.json", io.BytesIO())
         self.assertEqual(result.rev, "abcdef123")
+
+    def test_downloads_overlap_both_requests_and_response_streams(self):
+        requests_started = threading.Barrier(2)
+        streams_started = threading.Barrier(2)
+        clones = [Mock(), Mock()]
+        self.client.clone.side_effect = clones
+        payload = b"verified data"
+        responses = []
+
+        def request(path):
+            requests_started.wait(timeout=2)
+            response = Mock()
+
+            def chunks(chunk_size):
+                streams_started.wait(timeout=2)
+                yield payload
+
+            response.iter_content.side_effect = chunks
+            responses.append(response)
+            return SimpleNamespace(size=len(payload), content_hash=content_hash(payload)), response
+
+        for clone in clones:
+            clone.files_download.side_effect = request
+        outputs = [io.BytesIO(), io.BytesIO()]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(self.disk.download, f"/data/{i}", output)
+                       for i, output in enumerate(outputs)]
+            for future in futures:
+                future.result(timeout=5)
+        self.assertEqual([output.getvalue() for output in outputs], [payload, payload])
+        self.client.files_download.assert_not_called()
+        for response in responses:
+            response.close.assert_called_once()
+        for clone in clones:
+            clone.close.assert_not_called()
+
+    def test_parallel_downloads_share_one_refreshed_token_and_connection_pool(self):
+        import dropbox
+        from datetime import timedelta
+
+        client = dropbox.Dropbox(oauth2_refresh_token="refresh", app_key="app")
+        self.addCleanup(client.close)
+        self.disk._client = client
+        barrier = threading.Barrier(2)
+        clones = []
+
+        def refresh(scope):
+            client._oauth2_access_token = "fresh"
+            client._oauth2_access_token_expiration = datetime.utcnow() + timedelta(hours=4)
+
+        def request(clone, path):
+            clones.append(clone)
+            barrier.wait(timeout=2)
+            response = Mock()
+            response.iter_content.return_value = [b"data"]
+            return SimpleNamespace(size=4, content_hash=content_hash(b"data")), response
+
+        with patch.object(client, "refresh_access_token", side_effect=refresh) as refresh_token, \
+                patch.object(dropbox.Dropbox, "files_download", autospec=True, side_effect=request):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(self.disk.download, f"/data/{i}", io.BytesIO()) for i in range(2)]
+                for future in futures:
+                    future.result(timeout=5)
+        refresh_token.assert_called_once()
+        self.assertEqual(len({id(clone) for clone in clones}), 2)
+        for clone in clones:
+            self.assertEqual(clone._oauth2_access_token, "fresh")
+            self.assertIs(clone._session, client._session)
+
+    def test_download_auth_errors_are_sanitized_before_writing(self):
+        for method in (self.client.check_and_refresh_access_token, self.client.files_download):
+            with self.subTest(method=method):
+                method.side_effect = exceptions.AuthError("request", "private token")
+                output = io.BytesIO(b"existing")
+                with self.assertRaises(DropboxDiskError) as raised:
+                    self.disk.download("/account_password/data", output)
+                self.assertFalse(raised.exception.retryable)
+                self.assertNotIn("private", str(raised.exception))
+                self.assertNotIn("account_password", str(raised.exception))
+                self.assertEqual(output.getvalue(), b"existing")
+                method.side_effect = None
 
     def response(self, payload, *, checksum=None):
         response = Mock()

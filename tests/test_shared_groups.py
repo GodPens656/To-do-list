@@ -39,6 +39,11 @@ class MemoryDisk:
     def exists(self, path):
         return path.casefold() in self.files or path.casefold() in self.folders
 
+    def listdir(self, path):
+        prefix = path.casefold().rstrip('/') + '/'
+        return [SimpleNamespace(name=name[len(prefix):], type='file')
+                for name in self.files if name.startswith(prefix) and '/' not in name[len(prefix):]]
+
     def upload(self, source, path, overwrite=False, revision=None):
         if self.fail:
             raise TimeoutError("private path")
@@ -338,7 +343,7 @@ class SharedGroupUITests(unittest.TestCase):
         for item in front.back.get_groups():
             front._append_group_row(rows, item, Mock())
             button, menu = rows.controls[-1].controls
-            self.assertIn(ft.Icons.LINK_ROUNDED, [c.icon for c in button.content.controls if isinstance(c, ft.Icon)])
+            self.assertIn(ft.Icons.LINK_ROUNDED, [c.icon for c in button.content.content.controls if isinstance(c, ft.Icon)])
             self.assertNotIn("Сделать группу общей", [i.content for i in menu.items])
             self.assertNotIn("Редактировать", [i.content for i in menu.items])
             if item["id"] != "default":
@@ -346,6 +351,7 @@ class SharedGroupUITests(unittest.TestCase):
 
     def test_password_form_handles_errors_and_success_without_exposing_password(self):
         front = make_front()
+        front._update_control = Mock()
         front.open_modified_dialog = Mock()
         front._finish_group_edit = Mock()
         front.back.make_group_shared = Mock(side_effect=ValueError("Введите пароль"))
@@ -373,6 +379,7 @@ class SharedGroupUITests(unittest.TestCase):
         for phone in (False, True):
             with self.subTest(phone=phone):
                 front = make_front(phone=phone)
+                front._update_control = Mock()
                 front.page.services = []
                 front.open_modified_dialog = Mock()
                 group = {"id": "test", "name": "Команда с длинным названием " * 8}

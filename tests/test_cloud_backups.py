@@ -1,3 +1,5 @@
+import io
+import json
 import tempfile
 import threading
 import unittest
@@ -6,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from Backend.cloud import BACKUP_CHECK_SECONDS, BACKUP_RETRY_SECONDS, Cloud
+from Backend.cloud import BACKUP_CHECK_SECONDS, BACKUP_MANIFEST, BACKUP_RETRY_SECONDS, Cloud
 from Backend.crypto import encrypt_bytes
 from Backend.storage import SECTION_FILENAMES
 from Backend.webstorage import WebSessionStore
@@ -23,6 +25,8 @@ class MemoryDisk:
         }
         self.copy = Mock(side_effect=self._copy)
         self.move = Mock(side_effect=self._move)
+        self.upload = Mock(side_effect=self._upload)
+        self.download = Mock(side_effect=self._download)
 
     def exists(self, path):
         return path in self.dirs or path in self.files
@@ -49,6 +53,18 @@ class MemoryDisk:
         if self.exists(target) and not kwargs.get('overwrite'):
             raise FileExistsError()
         self.files[target] = self.files[source]
+
+    def _upload(self, source, target, **kwargs):
+        if target.rsplit('/', 1)[0] not in self.dirs:
+            raise FileNotFoundError()
+        if self.exists(target) and not kwargs.get('overwrite'):
+            raise FileExistsError()
+        self.files[target] = source.read()
+
+    def _download(self, source, target):
+        if source not in self.files:
+            raise FileNotFoundError()
+        target.write(self.files[source])
 
     def _move(self, source, target, **kwargs):
         if self.exists(target) and not kwargs.get('overwrite'):
@@ -101,7 +117,9 @@ class BackupTests:
         self.assertTrue(self.cloud.create_weekly_backup(self.today))
         target = self.backups + '/backup_19.09.2026'
         self.assertEqual({entry.name for entry in self.disk.listdir(target)},
-                         set(SECTION_FILENAMES.values()))
+                         set(SECTION_FILENAMES.values()) | {BACKUP_MANIFEST})
+        self.assertEqual(json.loads(self.disk.files[target + '/' + BACKUP_MANIFEST]),
+                         {'files': list(SECTION_FILENAMES.values())})
         for name in SECTION_FILENAMES.values():
             self.assertEqual(self.disk.files[target + '/' + name],
                              original['/For_to-do/user_password/' + name])
@@ -151,11 +169,105 @@ class BackupTests:
         self.disk.copy.side_effect = copy_file
         self.assertTrue(self.cloud.create_weekly_backup(self.today))
 
-    def test_missing_source_does_not_create_partial_backup(self):
+    def test_old_account_without_achievements_is_backed_up_once(self):
+        self.disk.files.pop('/For_to-do/user_password/achievements.json')
+        self.assertTrue(self.cloud.create_weekly_backup(self.today))
+        target = self.backups + '/backup_19.09.2026'
+        expected = set(SECTION_FILENAMES.values()) - {'achievements.json'}
+        self.assertEqual(set(json.loads(self.disk.files[target + '/' + BACKUP_MANIFEST])['files']),
+                         expected)
+        self.assertEqual(self.disk.copy.call_count, len(expected))
+        # Появление новой секции не отменяет интервал уже созданной копии.
+        self.disk.files['/For_to-do/user_password/achievements.json'] = b'[]'
+        restarted = self.make_cloud()
+        self.assertFalse(restarted.create_weekly_backup(date(2026, 9, 20)))
+        self.assertEqual(self.disk.copy.call_count, len(expected))
+
+    def test_missing_optional_sections_are_not_filled_from_local_data(self):
         self.disk.files.pop('/For_to-do/user_password/repeat_tasks.json')
+        self.assertTrue(self.cloud.create_weekly_backup(self.today))
+        target = self.backups + '/backup_19.09.2026'
+        self.assertNotIn(target + '/repeat_tasks.json', self.disk.files)
+        self.assertFalse(self.cloud.create_weekly_backup(date(2026, 9, 20)))
+
+    def test_legacy_single_file_is_backed_up_without_conversion(self):
+        for filename in ('itog.json', 'itog.txt'):
+            with self.subTest(filename=filename):
+                self.disk.files = {'/For_to-do/user_password/' + filename: b'legacy bytes'}
+                self.assertTrue(self.cloud.create_weekly_backup(self.today))
+                target = self.backups + '/backup_19.09.2026'
+                self.assertEqual(self.disk.files[target + '/' + filename], b'legacy bytes')
+                self.assertFalse(self.cloud.create_weekly_backup(date(2026, 9, 20)))
+                self.disk.remove(target)
+
+    def test_empty_account_does_not_publish_a_backup(self):
+        self.disk.files.clear()
+        with self.assertRaisesRegex(ValueError, 'нет данных'):
+            self.cloud.create_weekly_backup(self.today)
+        self.assertEqual(self.disk.listdir(self.backups), [])
+        self.disk.copy.assert_not_called()
+
+    def test_source_removed_during_copy_does_not_publish_a_backup(self):
+        def remove_source(source, target, **kwargs):
+            self.disk.files.pop(source)
+            self.disk._copy(source, target, **kwargs)
+
+        self.disk.copy.side_effect = remove_source
         with self.assertRaises(FileNotFoundError):
             self.cloud.create_weekly_backup(self.today)
         self.assertEqual(self.disk.listdir(self.backups), [])
+
+    def test_manifest_upload_failure_does_not_consume_daily_limit(self):
+        self.disk.upload.side_effect = TimeoutError()
+        with self.assertRaises(TimeoutError):
+            self.cloud.create_manual_backup(self.today)
+        self.assertEqual(self.disk.listdir(self.backups), [])
+        self.disk.upload.side_effect = self.disk._upload
+        self.assertTrue(self.cloud.create_manual_backup(self.today))
+
+    def test_manifest_requires_every_listed_file(self):
+        target = self.backups + '/backup_18.09.2026'
+        self.disk.mkdir(self.backups)
+        self.disk.mkdir(target)
+        for name in SECTION_FILENAMES.values():
+            if name != 'achievements.json':
+                self.disk.files[target + '/' + name] = b'[]'
+        self.disk.upload(io.BytesIO(json.dumps({'files': list(SECTION_FILENAMES.values())}).encode()),
+                         target + '/' + BACKUP_MANIFEST)
+        self.assertTrue(self.cloud.create_weekly_backup(self.today))
+
+    def test_backups_from_before_achievements_still_count_as_complete(self):
+        target = self.backups + '/backup_18.09.2026'
+        self.disk.mkdir(self.backups)
+        self.disk.mkdir(target)
+        for key, name in SECTION_FILENAMES.items():
+            if key != 'achievements':
+                self.disk.files[target + '/' + name] = b'old encrypted bytes'
+        self.assertFalse(self.cloud.create_weekly_backup(self.today))
+        self.disk.copy.assert_not_called()
+
+    def test_invalid_manifest_does_not_confirm_completeness(self):
+        target = self.backups + '/backup_18.09.2026'
+        self.disk.mkdir(self.backups)
+        self.disk.mkdir(target)
+        for name in SECTION_FILENAMES.values():
+            self.disk.files[target + '/' + name] = b'[]'
+        for payload in (b'broken json', b'{}', b'{"files": []}',
+                        b'{"files": [null]}', b'{"files": ["../tasks.json"]}'):
+            with self.subTest(payload=payload):
+                self.disk.files[target + '/' + BACKUP_MANIFEST] = payload
+                self.assertFalse(self.cloud._backup_is_complete(target))
+
+    def test_history_folder_removed_on_another_device_is_ignored(self):
+        listdir = self.disk.listdir
+
+        def removed_folder(path):
+            if path == self.backups:
+                return [SimpleNamespace(name='backup_18.09.2026', type='dir')]
+            return listdir(path)
+
+        self.disk.listdir = Mock(side_effect=removed_folder)
+        self.assertTrue(self.cloud.create_weekly_backup(self.today))
 
     def test_concurrent_device_cannot_overwrite_published_backup(self):
         target = self.backups + '/backup_19.09.2026'
@@ -223,8 +335,53 @@ class BackupTests:
         with patch.object(self.cloud._upload_cv, 'wait', side_effect=[None, SystemExit]) as wait:
             with self.assertRaises(SystemExit):
                 self.cloud._upload_worker()
-        self.assertEqual(self.cloud._check_weekly_backup.call_count, 2)
+        self.assertEqual(self.cloud._check_weekly_backup.call_count, 1)
         wait.assert_called_with(timeout=BACKUP_RETRY_SECONDS)
+
+    def test_initial_sync_finishes_before_backup_checks_are_enabled(self):
+        self.cloud._backup_checks_enabled = False
+        self.cloud.connect = True
+        self.cloud.create_weekly_backup = Mock()
+
+        def initial_sync(*args, **kwargs):
+            self.cloud._check_weekly_backup()
+            self.cloud.create_weekly_backup.assert_not_called()
+
+        self.cloud.download = Mock(side_effect=initial_sync)
+        self.cloud.sync_shared_groups = Mock(side_effect=initial_sync)
+        with patch.object(self.cloud._upload_cv, 'notify') as notify:
+            self.cloud.alg_for_start_app()
+        self.cloud.download.assert_called_once_with('user_password', preserve_local=True)
+        self.cloud.sync_shared_groups.assert_called_once()
+        notify.assert_called_once_with()
+        self.cloud._check_weekly_backup()
+        self.cloud.create_weekly_backup.assert_called_once_with()
+
+    def test_worker_prioritizes_pending_uploads_over_backups(self):
+        events = []
+        self.cloud._pending_login_password = 'user_password'
+        self.cloud.upload = Mock(side_effect=lambda account: events.append('upload'))
+        self.cloud._check_weekly_backup = Mock(side_effect=lambda: events.append('backup'))
+        with patch.object(self.cloud._upload_cv, 'wait', side_effect=[None, SystemExit]):
+            with self.assertRaises(SystemExit):
+                self.cloud._upload_worker()
+        self.assertEqual(events, ['upload', 'backup'])
+
+    def test_worker_drains_new_uploads_before_checking_backups(self):
+        events = []
+        self.cloud._pending_login_password = 'user_password'
+
+        def upload(account):
+            events.append('upload')
+            if len(events) == 1:
+                self.cloud.request_upload(account)
+
+        self.cloud.upload = Mock(side_effect=upload)
+        self.cloud._check_weekly_backup = Mock(side_effect=lambda: events.append('backup'))
+        with patch.object(self.cloud._upload_cv, 'wait', side_effect=[None, None, SystemExit]):
+            with self.assertRaises(SystemExit):
+                self.cloud._upload_worker()
+        self.assertEqual(events, ['upload', 'upload', 'backup'])
 
     def test_login_wakes_worker(self):
         with patch.object(self.cloud._upload_cv, 'notify') as notify:
@@ -280,6 +437,18 @@ class NativeBackupTests(BackupTests, unittest.TestCase):
 
 class WebBackupTests(BackupTests, unittest.TestCase):
     web = True
+
+
+class BackupStartupTests(unittest.TestCase):
+    def test_saved_login_does_not_enable_backups_before_initial_sync(self):
+        store = WebSessionStore(Mock())
+        store.write_meta_text('user_data', 'user_password~~user~~password')
+        disk = Mock()
+        with patch.object(Cloud, '_connect', True), patch.object(Cloud, '_disk', disk), \
+                patch('Backend.cloud.threading.Thread'):
+            cloud = Cloud(web_store=store)
+        cloud._check_weekly_backup()
+        self.assertEqual(disk.mock_calls, [])
 
 
 if __name__ == '__main__':

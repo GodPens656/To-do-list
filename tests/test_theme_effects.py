@@ -9,7 +9,9 @@ from unittest.mock import AsyncMock, patch
 import flet as ft
 
 from Backend.extended import Backend2
-from Frontend.glass import glass_background
+from Frontend.glass import glass_background, glass_gradient
+from Frontend.dayplanner import color_rgb, contrast_color
+from Frontend.libs import Fr_Libs
 from Frontend.theme import (
     BUTTON_BACKGROUND_OPTIONS, THEME_STYLE_OPTIONS, build_flet_theme,
     get_theme_colors, resolve_theme,
@@ -34,10 +36,23 @@ class ThemeEffectTests(unittest.TestCase):
                         front.render_daily_repeat_tasks()
                         front.libs.prepare(front.main_cont)
                         self.assertIsNone(front.tasks_cont.bgcolor)
-                        self.assertEqual(front.tasks_cont.gradient, front.btns_cont.gradient)
+                        self.assertIsNone(front.tasks_cont.gradient)
+                        self.assertIsNone(front.tasks_cont.border)
                         card = next(c for c in front.tasks_cont.content.controls
                                     if isinstance(c.data, str))
-                        self.assertEqual(card.gradient, front.btns_cont.gradient)
+                        self.assertIsNone(card.bgcolor)
+                        self.assertEqual(card.gradient, glass_gradient(front.theme, mobile=phone))
+                        self.assertIsNotNone(card.border)
+                        if phone:
+                            self.assertNotEqual(front.btns_cont.gradient, card.gradient)
+                            self.assertNotEqual(front.btns_cont.border, card.border)
+                            self.assertIsNone(front.btns_cont.bgcolor)
+                            self.assertIsNone(front.btns_cont.blur)
+                            self.assertIsNotNone(front.btns_cont.shadow)
+                            self.assertIsNotNone(front.btns_cont.foreground_decoration)
+                        else:
+                            for attribute in ("bgcolor", "gradient", "border", "blur", "shadow", "foreground_decoration"):
+                                self.assertEqual(getattr(front.btns_cont, attribute), getattr(card, attribute))
                         front.show_groups()
                         self.assertEqual(len(front.back.read_tasks()), 1)
                         if effect == "liquid_glass":
@@ -47,7 +62,7 @@ class ThemeEffectTests(unittest.TestCase):
                             self.assertEqual(front.page.theme.dialog_theme.elevation, 0)
                             self.assertEqual(front.page.theme.dropdown_theme.menu_style.elevation, 0)
                             self.assertIsNone(front.root_view.decoration)
-                            self.assertIsNotNone(front.btns_cont.blur)
+                            self.assertIsNone(front.btns_cont.blur)
 
     def test_selector_applies_and_removes_effect_preserving_group_and_theme(self):
         async def exercise(phone, native):
@@ -79,11 +94,11 @@ class ThemeEffectTests(unittest.TestCase):
                     self.assertEqual(front.libs.glass_mobile, phone and effect != "none")
                     self.assertEqual(front.current_group_id, "default")
                     self.assertEqual(len(front.back.read_tasks()), 1)
-                front.back2.redact_setting("theme_style", "oled_blue")
-                front.apply_theme_style("oled_blue", ft.Brightness.DARK)
-                self.assertEqual(front.theme, f"{final_effect}_oled_blue_dark")
+                front.back2.redact_setting("theme_style", "oled_green")
+                front.apply_theme_style("oled_green", ft.Brightness.DARK)
+                self.assertEqual(front.theme, f"{final_effect}_oled_green_dark")
                 front._on_platform_brightness_change(type("Event", (), {"brightness": ft.Brightness.LIGHT})())
-                self.assertEqual(front.theme, f"{final_effect}_oled_blue_light")
+                self.assertEqual(front.theme, f"{final_effect}_oled_green_light")
                 front.back2.redact_setting("button_bg_mode", "custom")
                 front.back2.redact_setting("button_custom_color", "#C62828")
                 front.apply_button_color()
@@ -176,6 +191,8 @@ class ThemeEffectTests(unittest.TestCase):
                     for accent in (None, "#C62828"):
                         colors = get_theme_colors(theme, accent)
                         for key, value in get_theme_colors(base, accent).items():
+                            if accent is None and key in ("CategoryIconColor", "CategoryIconBgColor"):
+                                continue
                             self.assertEqual(colors[key], value)
                         half, regular = build_flet_theme(theme, accent), build_flet_theme(base, accent)
                         self.assertEqual(half.color_scheme, regular.color_scheme)
@@ -197,6 +214,79 @@ class ThemeEffectTests(unittest.TestCase):
                         self.assertEqual(colors["ProgressColor"], accent)
                         self.assertIsNotNone(colors["GlassButtonTint"])
                         self.assertIsNotNone(build_flet_theme(theme, accent).button_theme)
+
+    def test_custom_accents_keep_primary_actions_and_settings_icons_distinct(self):
+        accents = [color for _, _, color in BUTTON_BACKGROUND_OPTIONS]
+        accents.extend(("#25134A", "#C62828", "#FAFAF8"))
+        for style, _ in THEME_STYLE_OPTIONS:
+            for brightness in (ft.Brightness.LIGHT, ft.Brightness.DARK):
+                for effect in ("none", "liquid_glass", "liquid_glass_half"):
+                    for accent in accents:
+                        with self.subTest(style=style, brightness=brightness, effect=effect, accent=accent):
+                            libs = Fr_Libs(resolve_theme(style, brightness, effect), False, button_color=accent)
+                            primary = libs.create_style_button("Добавить дело", primary=True)
+                            category = libs.create_style_category_button(ft.Icons.PALETTE_ROUNDED, "Кастомизация")
+                            expansion = libs.create_style_expansion_category(
+                                ft.Icons.TUNE_ROUNDED, "Общие настройки", [], framed=True,
+                            )
+                            section = libs.create_style_expansion_category(
+                                ft.Icons.PALETTE_ROUNDED, "Акцентный цвет", [],
+                            )
+                            libs.prepare(ft.Column([primary, category, expansion, section]))
+                            full_glass = effect == "liquid_glass"
+                            primary_fill = primary.content.bgcolor if full_glass else primary.bgcolor
+                            row = category.content.content if full_glass else category.content
+                            tile = expansion.content if full_glass else expansion
+                            plain_tile = section.content if full_glass else section
+                            badge = row.controls[0]
+                            self.assertNotEqual(color_rgb(primary_fill), color_rgb(accent))
+                            self.assertEqual(primary.style.color, contrast_color(primary_fill))
+                            self.assertEqual(badge.content.color, primary_fill)
+                            self.assertEqual(tile.title.controls[0].content.color, primary_fill)
+                            self.assertEqual(libs.colors["ProgressColor"], accent)
+                            self.assertEqual(tile.collapsed_text_color, libs.colors["ButtonTextColor"])
+                            self.assertEqual(plain_tile.collapsed_bgcolor, ft.Colors.TRANSPARENT)
+                            if full_glass:
+                                self.assertEqual(category.content.bgcolor, expansion.bgcolor)
+                                self.assertEqual(expansion.bgcolor, libs.colors["BtnColor"])
+                                self.assertIsNone(expansion.gradient)
+                                self.assertIsNone(tile.shape.side)
+                                self.assertEqual(tile.collapsed_bgcolor, ft.Colors.TRANSPARENT)
+                                self.assertEqual(tile.bgcolor, ft.Colors.TRANSPARENT)
+                            else:
+                                self.assertEqual(category.bgcolor, accent)
+                                self.assertEqual(tile.collapsed_bgcolor, accent)
+                                self.assertEqual(tile.bgcolor, libs.colors["BgColor"])
+                            # Repeated preparation must preserve both the tint
+                            # and icon colors after navigating or expanding.
+                            tile.expanded = True
+                            libs.prepare(expansion)
+                            self.assertTrue(tile.expanded)
+                            self.assertEqual(tile.title.controls[0].content.color, primary_fill)
+                            self.assertEqual(expansion.bgcolor if full_glass else tile.collapsed_bgcolor,
+                                             libs.colors["BtnColor"])
+
+    def test_default_settings_icons_remain_readable_over_glass(self):
+        def luminance(color):
+            channels = [channel / 255 for channel in color_rgb(color)]
+            linear = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+                      for v in channels]
+            return sum(v * weight for v, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+
+        for style, _ in THEME_STYLE_OPTIONS:
+            for brightness in (ft.Brightness.LIGHT, ft.Brightness.DARK):
+                for effect in ("liquid_glass", "liquid_glass_half"):
+                    with self.subTest(style=style, brightness=brightness, effect=effect):
+                        libs = Fr_Libs(resolve_theme(style, brightness, effect), False)
+                        category = libs.create_style_category_button(ft.Icons.PALETTE_ROUNDED, "Кастомизация")
+                        libs.prepare(category)
+                        row = category.content.content if effect == "liquid_glass" else category.content
+                        badge = row.controls[0]
+                        foreground, background = sorted((luminance(badge.content.color), luminance(badge.bgcolor)))
+                        self.assertGreaterEqual((background + 0.05) / (foreground + 0.05), 4.5)
+                        self.assertIsNone(badge.gradient)
+                        self.assertIsNone(badge.blur)
+                        self.assertIsNotNone(badge.border)
 
 
 if __name__ == "__main__":

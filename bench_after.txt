@@ -1,0 +1,91 @@
+Этап 1 — замеры слоя данных.
+Python 3.13.5, Flet 0.82.0, cryptography 48.0.0
+Платформа: Windows 11, AMD64
+Повторов: 11; прогревов: 2; p95: ближайший верхний ранг.
+Режим: native/ПК; синтетические данные; временные cwd, saves, settings и secret.py.
+Сеть отключена; облачный воркер не работает; connect=True проверяет постановку в очередь.
+account — синтетический вход с настоящей проверкой user_data и валидацией квот.
+Перед каждой операцией: восстановление ровно N дел и прогрев backend/cloud, вне таймера.
+Время измеряется без счётчиков; затем считаются обращения одной такой же операции.
+read — успешное открытие файла для чтения через Path.open, включая security/user_data.
+sections/security/user — подмножества read; dec — вызовы decrypt_bytes; aes — реальные AES-GCM.
+write — открытия для записи, включая временные файлы; stat — вызовы Path.stat, включая exists.
+Это обращения API файлов, а не физические чтения диска; кэш ОС не сбрасывается.
+Времена отдельных методов не включают последующий alg_for_redact, Flet/Flutter и GPU.
+После каждого изменения проверены результат, история выполнения и undo.
+Консольные декораторы: отключены, чтобы печать не искажала время.
+
+N | enc | profile | operation | p50_ms | p95_ms | read | sections | security | user | dec | aes | write | stat
+--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---
+50 | on | guest | read_tasks | 0.649 | 0.852 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+50 | on | guest | saveB | 6.030 | 6.388 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+50 | on | guest | redact_statusB | 7.929 | 9.589 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+50 | on | guest | kill_taskB | 5.712 | 6.343 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+50 | on | guest | get_task | 0.518 | 0.870 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+50 | on | guest | alg_for_redact | 0.695 | 0.753 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
+50 | on | account | read_tasks | 0.643 | 0.746 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+50 | on | account | saveB | 5.679 | 6.785 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+50 | on | account | redact_statusB | 7.465 | 8.204 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+50 | on | account | kill_taskB | 6.810 | 8.569 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+50 | on | account | get_task | 0.517 | 0.819 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+50 | on | account | alg_for_redact | 0.159 | 0.283 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2
+50 | off | guest | read_tasks | 0.627 | 0.991 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+50 | off | guest | saveB | 6.510 | 8.262 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+50 | off | guest | redact_statusB | 7.937 | 8.728 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+50 | off | guest | kill_taskB | 5.708 | 7.533 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+50 | off | guest | get_task | 0.544 | 0.924 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+50 | off | guest | alg_for_redact | 0.713 | 0.827 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
+50 | off | account | read_tasks | 0.616 | 0.676 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+50 | off | account | saveB | 5.881 | 6.302 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+50 | off | account | redact_statusB | 8.024 | 8.959 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+50 | off | account | kill_taskB | 5.688 | 6.989 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+50 | off | account | get_task | 0.507 | 0.903 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+50 | off | account | alg_for_redact | 0.158 | 0.177 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2
+300 | on | guest | read_tasks | 1.025 | 2.067 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+300 | on | guest | saveB | 9.908 | 11.426 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+300 | on | guest | redact_statusB | 11.497 | 16.278 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+300 | on | guest | kill_taskB | 9.293 | 11.072 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+300 | on | guest | get_task | 0.550 | 0.652 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+300 | on | guest | alg_for_redact | 1.184 | 1.859 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
+300 | on | account | read_tasks | 1.018 | 1.591 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+300 | on | account | saveB | 9.388 | 11.450 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+300 | on | account | redact_statusB | 11.125 | 13.123 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+300 | on | account | kill_taskB | 10.279 | 20.608 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+300 | on | account | get_task | 0.582 | 0.909 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+300 | on | account | alg_for_redact | 0.170 | 0.222 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2
+300 | off | guest | read_tasks | 1.063 | 1.627 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+300 | off | guest | saveB | 9.277 | 10.296 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+300 | off | guest | redact_statusB | 10.821 | 12.119 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+300 | off | guest | kill_taskB | 9.165 | 9.478 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+300 | off | guest | get_task | 0.573 | 0.905 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+300 | off | guest | alg_for_redact | 1.043 | 1.169 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
+300 | off | account | read_tasks | 1.000 | 1.975 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+300 | off | account | saveB | 9.475 | 10.970 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+300 | off | account | redact_statusB | 11.241 | 13.078 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+300 | off | account | kill_taskB | 8.941 | 9.496 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+300 | off | account | get_task | 0.553 | 0.697 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+300 | off | account | alg_for_redact | 0.175 | 0.342 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2
+1000 | on | guest | read_tasks | 2.053 | 3.737 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+1000 | on | guest | saveB | 19.726 | 22.017 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+1000 | on | guest | redact_statusB | 21.167 | 26.131 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+1000 | on | guest | kill_taskB | 19.728 | 29.179 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+1000 | on | guest | get_task | 0.592 | 0.675 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+1000 | on | guest | alg_for_redact | 2.279 | 3.680 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
+1000 | on | account | read_tasks | 2.135 | 3.709 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+1000 | on | account | saveB | 19.493 | 21.861 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+1000 | on | account | redact_statusB | 20.979 | 22.292 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+1000 | on | account | kill_taskB | 20.083 | 28.472 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+1000 | on | account | get_task | 0.583 | 1.171 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+1000 | on | account | alg_for_redact | 0.186 | 0.360 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2
+1000 | off | guest | read_tasks | 2.073 | 4.021 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+1000 | off | guest | saveB | 19.638 | 26.208 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+1000 | off | guest | redact_statusB | 21.214 | 24.444 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+1000 | off | guest | kill_taskB | 19.938 | 21.478 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+1000 | off | guest | get_task | 0.603 | 0.861 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+1000 | off | guest | alg_for_redact | 2.065 | 2.950 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 7
+1000 | off | account | read_tasks | 2.049 | 2.544 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+1000 | off | account | saveB | 19.444 | 22.710 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+1000 | off | account | redact_statusB | 21.138 | 28.677 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 39
+1000 | off | account | kill_taskB | 20.575 | 41.891 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 36
+1000 | off | account | get_task | 0.646 | 1.164 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 6
+1000 | off | account | alg_for_redact | 0.184 | 0.425 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2

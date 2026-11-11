@@ -5,9 +5,11 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from Backend.cloud import Cloud
+from Backend.dropbox_disk import DropboxDiskError
 from Backend.crypto import decrypt_bytes, encrypt_bytes
 from Backend.storage import SECTION_FILENAMES, empty_data, load_all_sections, save_all_sections
 from Backend.webstorage import WebSessionStore
@@ -26,6 +28,9 @@ class RefreshProtectionTests:
         self.cloud = self.make_cloud()
         self.cloud.disk = Mock()
         self.cloud.disk.exists.side_effect = lambda path: path.rsplit('/', 1)[-1] in SECTION_FILENAMES.values()
+        self.cloud.disk.listdir.side_effect = lambda path: [
+            SimpleNamespace(name=SECTION_FILENAMES[key], type='file') for key in self.remote
+        ]
         self.cloud.disk.download.side_effect = self.download
         self.cloud.disk.upload.side_effect = self.upload
         self.assertTrue(self.cloud.download('account'))
@@ -39,6 +44,7 @@ class RefreshProtectionTests:
         cloud._last_synced_versions = {}
         cloud._last_synced_versions_lock = threading.Lock()
         cloud._sync_lock = threading.RLock()
+        cloud._upload_cv = threading.Condition()
         cloud._upload_state_callback = None
         cloud.request_upload = Mock()
         cloud._load_sync_state()
@@ -73,6 +79,94 @@ class RefreshProtectionTests:
         self.assertTrue(self.cloud.download('account', preserve_local=True))
         self.assertEqual(self.read()['tasks'], self.remote['tasks'])
         self.assertFalse(self.cloud._section_needs_upload('account', 'tasks'))
+
+    def test_lists_once_and_downloads_settings_together_with_all_sections(self):
+        barrier = threading.Barrier(len(SECTION_FILENAMES) + 1)
+        original = self.download
+
+        def download(path, target):
+            barrier.wait(timeout=2)
+            if path.endswith('/security.json'):
+                target.write(b'{"encryption_enabled": false}')
+            else:
+                original(path, target)
+
+        self.cloud.disk.listdir.side_effect = None
+        self.cloud.disk.listdir.return_value = [
+            SimpleNamespace(name=name.upper(), type='file')
+            for name in (*SECTION_FILENAMES.values(), 'security.json')
+        ] + [SimpleNamespace(name='attachments', type='dir')]
+        self.cloud.disk.download.side_effect = download
+        self.cloud.disk.reset_mock()
+        self.assertTrue(self.cloud.download('account'))
+        self.cloud.disk.listdir.assert_called_once_with('/For_to-do/account')
+        self.cloud.disk.exists.assert_not_called()
+        self.assertEqual(self.cloud.disk.download.call_count, len(SECTION_FILENAMES) + 1)
+        self.assertFalse(self.cloud.account_encryption_enabled('account'))
+        self.assertEqual(self.read()['tasks'], self.remote['tasks'])
+
+    def test_listing_failure_keeps_local_data_and_sync_markers(self):
+        expected = self.read()
+        markers = copy.deepcopy(self.cloud._last_synced_versions)
+        self.cloud.disk.listdir.side_effect = DropboxDiskError('network failure', retryable=True)
+        self.cloud.disk.download.reset_mock()
+        self.assertFalse(self.cloud.download('account', preserve_local=True))
+        self.assertEqual(self.read(), expected)
+        self.assertEqual(self.cloud._last_synced_versions, markers)
+        self.cloud.disk.download.assert_not_called()
+
+    def test_invalid_security_aborts_the_entire_snapshot(self):
+        expected = self.read()
+        original = self.download
+        self.remote['tasks'].append({'id': 'remote', 'name': 'New task'})
+        self.cloud.disk.listdir.side_effect = None
+        self.cloud.disk.listdir.return_value = [
+            SimpleNamespace(name=name, type='file')
+            for name in (*SECTION_FILENAMES.values(), 'security.json')
+        ]
+
+        def download(path, target):
+            if path.endswith('/security.json'):
+                target.write(b'{"encryption_enabled": "false"}')
+            else:
+                original(path, target)
+
+        self.cloud.disk.download.side_effect = download
+        self.assertFalse(self.cloud.download('account', preserve_local=True))
+        self.assertEqual(self.read(), expected)
+
+    def test_file_removed_after_listing_does_not_apply_partial_data(self):
+        expected = self.read()
+        original = self.download
+
+        def download(path, target):
+            if path.endswith('/groups.json'):
+                raise FileNotFoundError()
+            original(path, target)
+
+        self.cloud.disk.download.side_effect = download
+        self.assertFalse(self.cloud.download('account', preserve_local=True))
+        self.assertEqual(self.read(), expected)
+
+    def test_retry_only_downloads_the_failed_section_again(self):
+        original = self.download
+        attempts = {}
+
+        def download(path, target):
+            attempts[path] = attempts.get(path, 0) + 1
+            if path.endswith('/tasks.json') and attempts[path] == 1:
+                target.write(b'partial')
+                raise DropboxDiskError('interrupted', retryable=True)
+            original(path, target)
+
+        self.cloud.disk.download.side_effect = download
+        self.cloud.disk.listdir.reset_mock()
+        with patch('Backend.cloud.time.sleep'):
+            self.assertTrue(self.cloud.download('account', preserve_local=True))
+        self.cloud.disk.listdir.assert_called_once()
+        self.assertEqual(attempts['/For_to-do/account/tasks.json'], 2)
+        self.assertTrue(all(count == 1 for path, count in attempts.items() if not path.endswith('/tasks.json')))
+        self.assertEqual(self.read()['tasks'], self.remote['tasks'])
 
     def test_unsent_changes_block_refresh_and_queue_upload(self):
         expected = self.edit()
@@ -173,6 +267,8 @@ class RefreshProtectionTests:
         data['achievements'] = [{'task_id': 'other-account', 'date': '2026-10-30'}]
         self.save(data)
         self.cloud.disk.exists.side_effect = lambda path: path.endswith('/itog.txt')
+        self.cloud.disk.listdir.return_value = [SimpleNamespace(name='itog.txt', type='file')]
+        self.cloud.disk.listdir.side_effect = None
         self.cloud.disk.download.side_effect = lambda path, target: target.write(
             encrypt_bytes('Старое дело|True|legacy|default\n---\n\n---\n\n---\nБез группы|default'.encode('utf-8'))
         )
@@ -199,6 +295,8 @@ class RefreshProtectionTests:
         ):
             with self.subTest(filename=filename):
                 self.cloud.disk.exists.side_effect = lambda path: path.endswith('/' + filename)
+                self.cloud.disk.listdir.side_effect = None
+                self.cloud.disk.listdir.return_value = [SimpleNamespace(name=filename, type='file')]
                 self.cloud.disk.download.side_effect = lambda path, target: target.write(encrypt_bytes(payload.encode()))
                 self.assertTrue(self.cloud.download('legacy-account'))
                 self.assertEqual(self.read()['tasks'][0]['id'], 'legacy')

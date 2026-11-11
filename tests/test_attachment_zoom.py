@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from copy import deepcopy
 from io import BytesIO
 import unittest
@@ -13,6 +14,40 @@ from test_ui_state import make_front
 
 
 class AttachmentZoomTests(unittest.TestCase):
+    def test_preview_and_rotation_use_browser_safe_image_sources(self):
+        for web in (True, False):
+            with self.subTest(web=web):
+                front = make_front()
+                front.page.web = web
+                front.page.platform = ft.PagePlatform.WINDOWS
+                content = BytesIO()
+                Image.new("RGB", (120, 80), "blue").save(content, "TIFF")
+                attachment = make_attachment("Фото.tiff", content.getvalue())
+                original = deepcopy(attachment)
+                controls = attachment_controls(front.libs, [attachment])
+                controls.controls[0].controls[-1].controls[0].on_click(None)
+                dialog = front.page.show_dialog.call_args.args[0]
+                image = dialog.content.content.controls[0].content
+
+                def decoded_size():
+                    if web:
+                        prefix = "data:image/png;base64,"
+                        self.assertIsInstance(image.src, str)
+                        self.assertTrue(image.src.startswith(prefix))
+                        raw = base64.b64decode(image.src[len(prefix):], validate=True)
+                    else:
+                        self.assertIsInstance(image.src, bytes)
+                        raw = image.src
+                    with Image.open(BytesIO(raw)) as preview:
+                        self.assertEqual(preview.format, "PNG")
+                        return preview.size
+
+                self.assertEqual(decoded_size(), (120, 80))
+                for size in ((80, 120), (120, 80), (80, 120), (120, 80)):
+                    asyncio.run(dialog.actions[0].on_click(None))
+                    self.assertEqual(decoded_size(), size)
+                self.assertEqual(attachment, original)
+
     def test_preview_buttons_zoom_and_reset_on_desktop_and_phone(self):
         for phone, platform in ((False, ft.PagePlatform.WINDOWS),
                                 (True, ft.PagePlatform.ANDROID),

@@ -1,0 +1,1213 @@
+--- a/Frontend/miscs.py
++++ b/Frontend/miscs.py
+@@ -5,6 +5,7 @@
+ from .theme import get_theme_colors
+ from .libs import Fr_Libs
+ from .attachments import attachment_controls
++from .task_actions import TaskActionsMenu
+ from Backend.extended import Backend2
+ from Backend.core import local_today
+ from Backend.timing import timed
+@@ -74,6 +75,19 @@
+             self.height_for_dlg_spacer = 0
+         self.btn_new_task = ft.Button()
+         self.cloud = cloud
++
++    def _task_menu_appearance(self):
++        """Повторяет оформление прежнего PopupMenuButton один раз на тему."""
++        key = (id(self.libs), self.theme)
++        if getattr(self, '_task_menu_appearance_key', None) != key:
++            probe = self.libs.prepare(ft.PopupMenuButton(icon_color=self.libs.FletIconColor))
++            self._task_menu_theme = ft.Theme(popup_menu_theme=ft.PopupMenuTheme(
++                color=probe.bgcolor, shape=probe.shape,
++                elevation=probe.elevation, shadow_color=probe.shadow_color,
++            ))
++            self._task_menu_icon_color = probe.icon_color
++            self._task_menu_appearance_key = key
++        return self._task_menu_theme, self._task_menu_icon_color
+ 
+     @timed
+     def create_row_with_task(self, task, status, id_task, created_date=None, group_id='default',
+@@ -160,31 +174,15 @@
+                 e, id_task, checkbox.value, row_with_task, taskW
+             )
+ 
+-        def menu_item(label, icon, on_click=None):
+-            return ft.PopupMenuItem(
+-                content=label,
+-                icon=ft.Icon(icon, size=18, color=self.libs.FletIconColor),
+-                label_text_style=ft.TextStyle(
+-                    size=self.libs.text_size(14), color=self.TxtColor,
+-                ),
+-                on_click=on_click,
+-            )
+-
+-        redact = menu_item("Редактировать", ft.Icons.EDIT_ROUNDED)
+-        delete = menu_item("Удалить", ft.Icons.DELETE_ROUNDED)
+-        items = [redact, menu_item("Скопировать", ft.Icons.CONTENT_COPY_ROUNDED, on_copy)]
+-        if show_checkbox:
+-            items.append(menu_item("Сделать повторяющимися", ft.Icons.REPEAT_ROUNDED, on_repeat))
+-        items.append(delete)
+-        actions = [ft.PopupMenuButton(
+-            icon=ft.Icons.MORE_VERT,
+-            icon_color=self.libs.FletIconColor,
+-            tooltip="Действия с делом" if show_checkbox else "Действия с заметкой",
+-            items=items,
+-        )]
++        menu_theme, menu_icon_color = self._task_menu_appearance()
++        menu = TaskActionsMenu(
++            self.libs, id_task, icon_color=menu_icon_color, show_checkbox=show_checkbox,
++            on_copy=on_copy, on_repeat=on_repeat,
++        )
++        redact, delete = menu.edit, menu.delete
+ 
+         cont_with_actions = ft.Container(
+-            content=ft.Row(actions, spacing=0, tight=True),
++            content=ft.Row([menu], spacing=0, tight=True), theme=menu_theme,
+         )
+ 
+         """Возвращение"""
+--- a/Frontend/init_page.py
++++ b/Frontend/init_page.py
+@@ -270,7 +270,8 @@
+                 return
+             unlock.disabled = password.disabled = True
+             status.value = ""
+-            self.page.update()
++            # Состояние проверки пароля меняется только внутри карточки входа.
++            self._update_control(card)
+             try:
+                 valid = await asyncio.to_thread(self.back2.verify_app_password, password.value)
+             except (OSError, ValueError):
+@@ -289,7 +290,8 @@
+             password.value = ""
+             status.value = status.value or "Неверный пароль. Попробуйте ещё раз."
+             unlock.disabled = password.disabled = False
+-            self.page.update()
++            # Ошибка и доступность полей относятся к той же карточке.
++            self._update_control(card)
+ 
+         unlock.on_click = password.on_submit = submit
+         card = self.libs.create_style_cont([
+@@ -564,6 +566,9 @@
+             if button is not None:
+                 button.disabled = disabled
+                 try:
++                    # При точечном обновлении карточки панель больше не обходится:
++                    # обновляем также стеклянную оболочку самой кнопки отмены.
++                    self.libs.prepare(button)
+                     button.update()
+                 except RuntimeError:
+                     pass
+@@ -1029,12 +1034,16 @@
+     def _on_view_pop(self, e=None):
+         self.close_page()
+ 
+-    def _update_control(self, control):
+-        """Patch the changed subtree in both web and native clients."""
+-        if not isinstance(control, (GlassHost, PlannerHost)):
+-            self.libs.prepare(control)
++    def _update_control(self, control, *other_controls):
++        """Отправляет один патч изменённых поддеревьев в web и нативных клиентах."""
++        for subtree in (control, *other_controls):
++            if not isinstance(subtree, (GlassHost, PlannerHost)):
++                self.libs.prepare(subtree)
+         try:
+-            control.update()
++            if other_controls:
++                self.page.update(control, *other_controls)
++            else:
++                control.update()
+         except RuntimeError:
+             if self.web:
+                 raise
+@@ -1217,7 +1226,8 @@
+             picked = self._picker_event_date(event)
+             if picked:
+                 deadline_field.value = picked.strftime("%d-%m-%Y")
+-                self.page.update()
++                # Выбор даты меняет только значение этого поля.
++                self._update_control(deadline_field)
+ 
+         picker = ft.DatePicker(current_date=today, on_change=on_deadline_change,
+                                locale=ft.Locale("ru", "RU"))
+@@ -1229,7 +1239,8 @@
+             deadline_field.visible = selector.value == "deadline"
+             deadline_button.visible = selector.value == "deadline" and not deadline_as_days
+             priority_dropdown.visible = selector.value == "priority"
+-            self.page.update()
++            # Переразметка видимых полей ограничена формой метаданных.
++            self._update_control(dialog["Main Cont"])
+ 
+         selector.on_select = update_visibility
+         controls = dialog["Main Cont"].content.controls
+@@ -1252,7 +1263,8 @@
+                 except (TypeError, ValueError):
+                     deadline_field.label = "Введите число от 1 до 3650"
+                     deadline_field.border_color = ft.Colors.RED
+-                    self.page.update()
++                    # Ошибка ввода не затрагивает остальные элементы страницы.
++                    self._update_control(deadline_field)
+                     return None
+                 deadline_field.label = "Дедлайн через (дней)"
+                 deadline_field.border_color = None
+@@ -1379,7 +1391,8 @@
+                 )
+                 if tasks_in_group <= 10 and repeat_task:
+                     self.render_daily_repeat_tasks()
+-                    self.page.update()
++                    # Перестроен только основной список и его счётчики.
++                    self._update_control(self.main_cont)
+                     return True
+ 
+             async def copy_task_name(e):
+@@ -1511,7 +1524,12 @@
+                     if self.current_status_sort:
+                         self._reorder_task_cards()
+                     self._refresh_task_overview()
+-                    self._update_control(self.main_cont)
++                    if self.current_status_sort:
++                        self._update_control(self.main_cont)
++                    else:
++                        # Без сортировки порядок карточек не меняется: достаточно
++                        # самой строки и сводки, без обхода остальных дел.
++                        self._update_control(task_row, self.task_overview)
+ 
+                 checkbox.on_change = save_status_and_refresh
+                 task_widgets[1].on_click = lambda e, i=id_, r=task_row: self.page.run_task(
+@@ -1527,7 +1545,8 @@
+             # entire group screen is still being assembled.
+             if not defer_update:
+                 self._refresh_task_overview()
+-                self.page.update()
++                # Новая карточка, прогресс и счётчики находятся в main_cont.
++                self._update_control(self.main_cont)
+             return True
+ 
+     def close_dlg(self, e):
+@@ -1741,7 +1760,8 @@
+                 year_date_field.value = picker_value.strftime("%d-%m")
+                 year_date_field.label = "Выбранная дата"
+                 year_date_field.border_color = None
+-            self.page.update()
++            # После DatePicker обновляется только поле выбранной даты.
++            self._update_control(year_date_field)
+ 
+ 
+         self.page.locale_configuration = ft.LocaleConfiguration(
+@@ -1768,7 +1788,7 @@
+ 
+         year_date_button.on_click = open_year_picker
+ 
+-        def update_repeat_widgets(e=None):
++        def update_repeat_widgets(e=None, *, update=True):
+             """Показывает набор виджетов, соответствующий выбранной
+             периодичности повторения, и скрывает остальные."""
+             repeat_type = repeat_type_dd.value
+@@ -1777,10 +1797,15 @@
+             month_day_entry.visible = repeat_type == "month"
+             year_date_button.visible = repeat_type == "year"
+             year_date_field.visible = repeat_type == "year"
+-            self.page.update()
++            # Меняется раскладка формы; при первоначальной сборке она ещё не смонтирована.
++            if update:
++                self._update_control(main_cont)
+ 
+         repeat_type_dd.on_select = update_repeat_widgets
+-        update_repeat_widgets()
++        update_repeat_widgets(update=False)
++        # Новые DatePicker в overlay и локаль относятся к Page: подготовка
++        # диалога сохраняет полный апдейт, последующие выборы меняют только форму.
++        self.page.update()
+ 
+         @self._guard_attachment_quota
+         def create_repeat(_):
+@@ -1796,7 +1821,8 @@
+                 except (TypeError, ValueError):
+                     entry_interval_rep.label = "Введите число от 1 до 367"
+                     entry_interval_rep.border_color = ft.Colors.RED
+-                    self.page.update()
++                    # Подсветка ошибки ограничена полем интервала.
++                    self._update_control(entry_interval_rep)
+                     return
+                 entry_interval_rep.label = "Повторять через (дней)"
+                 entry_interval_rep.border_color = None
+@@ -1813,7 +1839,8 @@
+                 except (TypeError, ValueError):
+                     month_day_entry.label = "Введите число от 1 до 31"
+                     month_day_entry.border_color = ft.Colors.RED
+-                    self.page.update()
++                    # Подсветка ошибки ограничена полем числа месяца.
++                    self._update_control(month_day_entry)
+                     return
+                 month_day_entry.label = "Число месяца"
+                 month_day_entry.border_color = None
+@@ -1823,7 +1850,8 @@
+                 if not year_date_field.value:
+                     year_date_field.label = "Сначала выберите дату"
+                     year_date_field.border_color = ft.Colors.RED
+-                    self.page.update()
++                    # Подсветка ошибки ограничена полем годовой даты.
++                    self._update_control(year_date_field)
+                     return
+                 year_date_field.label = "Выбранная дата"
+                 year_date_field.border_color = None
+@@ -1886,7 +1914,8 @@
+                 date_field.value = picker_value.strftime("%d-%m-%Y")
+                 date_field.label = "Дата добавления"
+                 date_field.border_color = None
+-            self.page.update()
++            # Выбранная дата отображается в одном поле формы.
++            self._update_control(date_field)
+ 
+         self.page.locale_configuration = ft.LocaleConfiguration(
+             supported_locales=[ft.Locale("ru", "RU"), ft.Locale("en", "GB")],
+@@ -1922,7 +1951,8 @@
+             if not date_field.value:
+                 date_field.label = "Сначала выберите дату"
+                 date_field.border_color = ft.Colors.RED
+-                self.page.update()
++                # Отсутствующая дата отмечается только в поле даты.
++                self._update_control(date_field)
+                 return
+ 
+             metadata = metadata_values()
+@@ -1937,7 +1967,8 @@
+             if not created:
+                 date_field.label = "Некорректная дата"
+                 date_field.border_color = ft.Colors.RED
+-                self.page.update()
++                # Ошибка сохранения отображается только у даты.
++                self._update_control(date_field)
+                 return
+ 
+             self.utils2.add_to_cont_with_postponed_task(
+@@ -1994,7 +2025,8 @@
+             if picker_value is not None:
+                 year_date_field.value = picker_value.strftime("%d-%m")
+                 year_date_field.border_color = None
+-            self.page.update()
++            # Редактор правила меняет только поле годовой даты.
++            self._update_control(year_date_field)
+ 
+         year_picker = ft.DatePicker(
+             first_date=date(local_today(self.web, self.page).year, 1, 1), current_date=local_today(self.web, self.page), value=local_today(self.web, self.page),
+@@ -2005,17 +2037,21 @@
+             self.page.overlay.append(year_picker)
+         year_date_button.on_click = lambda _: (setattr(year_picker, "open", True), self.page.update())
+ 
+-        def update_repeat_widgets(e=None):
++        def update_repeat_widgets(e=None, *, update=True):
+             selected = repeat_type_dd.value
+             entry_interval.visible = selected == "custom"
+             weekday_dd.visible = selected == "week"
+             month_day_entry.visible = selected == "month"
+             year_date_button.visible = selected == "year"
+             year_date_field.visible = selected == "year"
+-            self.page.update()
++            # Переразметка ограничена формой редактирования правила.
++            if update:
++                self._update_control(dialog["Main Cont"])
+ 
+         repeat_type_dd.on_select = update_repeat_widgets
+-        update_repeat_widgets()
++        update_repeat_widgets(update=False)
++        # Регистрацию новых DatePicker в overlay оставляем полному апдейту.
++        self.page.update()
+ 
+         @self._guard_attachment_quota
+         def save(_):
+@@ -2029,7 +2065,8 @@
+                         raise ValueError
+                 except (TypeError, ValueError):
+                     entry_interval.label, entry_interval.border_color = "Введите число от 1 до 367", ft.Colors.RED
+-                    self.page.update()
++                    # Ошибка интервала не требует обновления списка за формой.
++                    self._update_control(entry_interval)
+                     return
+             elif selected == "week":
+                 backend_type, backend_value = "week", int(weekday_dd.value)
+@@ -2040,12 +2077,14 @@
+                         raise ValueError
+                 except (TypeError, ValueError):
+                     month_day_entry.label, month_day_entry.border_color = "Введите число от 1 до 31", ft.Colors.RED
+-                    self.page.update()
++                    # Обновляется только поле с ошибкой числа месяца.
++                    self._update_control(month_day_entry)
+                     return
+             elif selected == "year":
+                 if not year_date_field.value:
+                     year_date_field.label, year_date_field.border_color = "Сначала выберите дату", ft.Colors.RED
+-                    self.page.update()
++                    # Обновляется только поле с отсутствующей годовой датой.
++                    self._update_control(year_date_field)
+                     return
+                 backend_type, backend_value = "year", year_date_field.value
+             else:
+@@ -2091,7 +2130,8 @@
+                 date_field.value = picker_value.strftime("%d-%m-%Y")
+                 date_field.label = "Дата добавления"
+                 date_field.border_color = None
+-            self.page.update()
++            # Редактор отложенного дела меняет только поле даты.
++            self._update_control(date_field)
+ 
+         picker = ft.DatePicker(
+             first_date=date(local_today(self.web, self.page).year, 1, 1),
+@@ -2124,7 +2164,8 @@
+             if not date_field.value:
+                 date_field.label = "Сначала выберите дату"
+                 date_field.border_color = ft.Colors.RED
+-                self.page.update()
++                # Ошибка в редакторе относится только к отсутствующей дате.
++                self._update_control(date_field)
+                 return
+ 
+             updated_metadata = metadata_values()
+@@ -2136,7 +2177,8 @@
+             else:
+                 date_field.label = "Некорректная дата"
+                 date_field.border_color = ft.Colors.RED
+-                self.page.update()
++                # Ошибка изменения даты не затрагивает всю страницу.
++                self._update_control(date_field)
+ 
+         dialog["btn_create_task"].on_click = save
+         entry.on_submit = save
+@@ -2809,7 +2851,8 @@
+                 copy_status.value = "Не удалось скопировать название. Выделите и скопируйте его вручную."
+                 copy_status.color = ft.Colors.RED
+             copy_status.visible = True
+-            self.page.update()
++            # Результат копирования меняет только текст статуса.
++            self._update_control(copy_status)
+ 
+         create = self.libs.create_style_button("Сделать общей")
+         cancel = self.libs.create_style_button("Назад")
+@@ -2820,7 +2863,8 @@
+                 return
+             create.disabled = password.disabled = cancel.disabled = True
+             progress.visible = True
+-            self.page.update()
++            # Индикатор и доступность кнопок находятся внутри формы общей группы.
++            self._update_control(content)
+             success = False
+             try:
+                 await asyncio.to_thread(self.back.make_group_shared, group["id"], password.value or "")
+@@ -2838,7 +2882,8 @@
+                 password.value = ""
+                 self._finish_group_edit()
+             else:
+-                self.page.update()
++                # Ошибка и восстановленные кнопки относятся к той же форме.
++                self._update_control(content)
+ 
+         create.on_click = share
+         password.on_submit = share
+--- a/Frontend/settings.py
++++ b/Frontend/settings.py
+@@ -208,6 +208,17 @@
+ 
+         return self.settings_cont, btn_nazad, primechanya_btn, dialogs
+ 
++    def _update_controls(self, *controls):
++        """Отправляет один патч изменённых поддеревьев без обхода всей страницы."""
++        for control in controls:
++            self.libs.prepare(control)
++        try:
++            self.back.page.update(*controls)
++        except RuntimeError:
++            # Во время первоначальной сборки поддерево ещё может быть не смонтировано.
++            self.back.page.update()
++        ft.context.disable_auto_update()
++
+     def build_dialog_security(self, page):
+         header = self.libs.create_style_header('Безопасность')
+         back = self.libs.create_style_button('Назад')
+@@ -243,7 +254,8 @@
+                 status.value = ""
+             except Exception:
+                 status.value = "Не удалось загрузить настройку. Откройте раздел ещё раз."
+-            page.update()
++            # Настройка шифрования меняет только переключатель и его подпись.
++            self._update_controls(switch, status)
+ 
+         async def apply(e):
+             nonlocal enabled, busy
+@@ -253,7 +265,8 @@
+             busy = True
+             switch.disabled = True
+             status.value = "Изменение шифрования…"
+-            page.update()
++            # Состояние ожидания ограничено этими двумя контролами.
++            self._update_controls(switch, status)
+             try:
+                 await asyncio.to_thread(self.cloud.set_account_encryption, account, requested)
+                 enabled = requested
+@@ -266,7 +279,8 @@
+                 busy = False
+                 switch.value = enabled
+                 switch.disabled = False
+-                page.update()
++                # Результат операции не меняет другие разделы настроек.
++                self._update_controls(switch, status)
+ 
+         switch.on_change = apply
+         return ft.Column([
+@@ -309,7 +323,8 @@
+                 field.value = ""
+             status.value = ""
+             refresh()
+-            page.update()
++            # Видимость полей и кнопки меняется только в разделе пароля.
++            self._update_controls(content)
+ 
+         async def apply(e):
+             nonlocal enabled
+@@ -317,12 +332,14 @@
+                 return
+             if switch.value and password.value != confirmation.value:
+                 status.value = "Пароли не совпадают."
+-                page.update()
++                # Несовпадение паролей меняет только сообщение об ошибке.
++                self._update_controls(status)
+                 return
+             save.disabled = switch.disabled = True
+             for field in (current, password, confirmation):
+                 field.disabled = True
+-            page.update()
++            # Блокировка ввода ограничена разделом пароля.
++            self._update_controls(content)
+             try:
+                 if switch.value:
+                     await asyncio.to_thread(
+@@ -347,12 +364,13 @@
+                 save.disabled = switch.disabled = False
+                 for field in (current, password, confirmation):
+                     field.disabled = False
+-                page.update()
++                # После сохранения обновляются поля, переключатель и статус раздела.
++                self._update_controls(content)
+ 
+         switch.on_change = toggle
+         save.on_click = confirmation.on_submit = current.on_submit = apply
+         refresh()
+-        return ft.Column([
++        content = ft.Column([
+             switch,
+             ft.Text(
+                 "Отдельный пароль для входа в приложение на этом устройстве.",
+@@ -360,6 +378,7 @@
+             ),
+             current, password, confirmation, save, status,
+         ], spacing=12)
++        return content
+ 
+     def _build_special_task_list(self, repeating, cmd_create, cmd_info, page):
+         """Общие элементы списка для встроенного и отдельного диалога."""
+@@ -492,7 +511,8 @@
+                 return
+             btn_backup.disabled = True
+             backup_status.value = "Отправка бэкапа…"
+-            self.back.page.update()
++            # Отправка бэкапа меняет только свою кнопку и статус.
++            self._update_controls(btn_backup, backup_status)
+             try:
+                 account = self.cloud.read_user_data_text().split("~~")[0].strip()
+                 if not account:
+@@ -510,7 +530,8 @@
+                 backup_status.value = "Не удалось отправить бэкап. Проверьте интернет и попробуйте ещё раз."
+             finally:
+                 btn_backup.disabled = False
+-                self.back.page.update()
++                # Завершение выгрузки возвращает доступность той же кнопки.
++                self._update_controls(btn_backup, backup_status)
+ 
+         btn_backup.on_click = send_backup
+         return ft.Container(
+@@ -530,7 +551,8 @@
+ 
+         def busy(value):
+             import_button.disabled = export_button.disabled = value
+-            self.back.page.update()
++            # Импорт и экспорт меняют только свои кнопки и сообщение.
++            self._update_controls(import_button, export_button, status)
+ 
+         async def export_data(_):
+             if export_button.disabled:
+@@ -796,7 +818,8 @@
+             extra.opacity = 1 if disabled else 0.6
+             toggle.content = "Включить" if disabled else "Отключить"
+             toggle.icon = ft.Icons.PLAY_ARROW_ROUNDED if disabled else ft.Icons.PAUSE_ROUNDED
+-            self.libs.page.update()
++            # Подпись и пункт меню принадлежат одной строке повторяющегося дела.
++            self._update_controls(row)
+ 
+         toggle.on_click = toggle_disabled
+ 
+--- a/tests/test_ui_state.py
++++ b/tests/test_ui_state.py
+@@ -7,6 +7,7 @@
+ 
+ from Backend.webstorage import WebSessionStore
+ from Frontend.init_page import Front
++from Frontend.task_actions import TaskActionsMenu
+ 
+ 
+ def make_front(theme="chatgpt", dark=False, phone=False, page=None, effect=None, settings=None):
+@@ -41,6 +42,9 @@
+     pending = [card]
+     while pending:
+         control = pending.pop()
++        if isinstance(control, TaskActionsMenu):
++            control.build_items()
++            return control
+         if isinstance(control, ft.PopupMenuButton):
+             return control
+         pending.extend(getattr(control, "controls", []))
+@@ -167,9 +171,10 @@
+                 self.assertIsInstance(controls[0 if phone else 1], ft.Checkbox)
+                 actions = controls[2 if phone else 0].content.controls
+                 self.assertEqual(len(actions), 1)
+-                self.assertIsInstance(actions[0], ft.PopupMenuButton)
++                self.assertIsInstance(actions[0], TaskActionsMenu)
++                self.assertEqual(actions[0].items, [])
+                 self.assertEqual(actions[0].tooltip, "Действия с делом")
+-                self.assertEqual([item.content for item in actions[0].items], [
++                self.assertEqual([item.content for item in task_menu(card).items], [
+                     "Редактировать", "Скопировать", "Сделать повторяющимися", "Удалить",
+                 ])
+ 
+--- a/tests/test_security.py
++++ b/tests/test_security.py
+@@ -176,6 +176,7 @@
+         for web in (False, True):
+             with self.subTest(web=web):
+                 front = make_front()
++                front._update_control = Mock()
+                 front.back2.set_app_password("пароль входа")
+                 front.web = web
+                 front._app_locked = True
+--- a/tests/test_shared_groups.py
++++ b/tests/test_shared_groups.py
+@@ -351,6 +351,7 @@
+ 
+     def test_password_form_handles_errors_and_success_without_exposing_password(self):
+         front = make_front()
++        front._update_control = Mock()
+         front.open_modified_dialog = Mock()
+         front._finish_group_edit = Mock()
+         front.back.make_group_shared = Mock(side_effect=ValueError("Введите пароль"))
+@@ -378,6 +379,7 @@
+         for phone in (False, True):
+             with self.subTest(phone=phone):
+                 front = make_front(phone=phone)
++                front._update_control = Mock()
+                 front.page.services = []
+                 front.open_modified_dialog = Mock()
+                 group = {"id": "test", "name": "Команда с длинным названием " * 8}
+--- /dev/null
++++ b/Frontend/task_actions.py
+@@ -0,0 +1,75 @@
++"""Ленивые пункты меню карточки с прежними целями привязки обработчиков."""
++
++from dataclasses import dataclass
++
++import flet as ft
++
++from .controls import ActionIconButton
++
++
++@dataclass(slots=True)
++class TaskAction:
++    """Лёгкая цель для on_click и tooltip до создания PopupMenuItem."""
++
++    label: str
++    icon: object
++    on_click: object = None
++    tooltip: str | None = None
++
++
++class TaskActionsMenu(ft.ContextMenu):
++    """Создаёт нативные PopupMenuItem только перед первым открытием меню."""
++
++    def __init__(self, libs, task_id, *, icon_color, show_checkbox=True,
++                 on_copy=None, on_repeat=None):
++        self._libs = libs
++        self._opening = False
++        self.edit = TaskAction("Редактировать", ft.Icons.EDIT_ROUNDED)
++        self.delete = TaskAction("Удалить", ft.Icons.DELETE_ROUNDED)
++        self.actions = [self.edit, TaskAction("Скопировать", ft.Icons.CONTENT_COPY_ROUNDED, on_copy)]
++        if show_checkbox:
++            self.actions.append(TaskAction("Сделать повторяющимися", ft.Icons.REPEAT_ROUNDED, on_repeat))
++        self.actions.append(self.delete)
++        button = ActionIconButton(
++            icon=ft.Icons.MORE_VERT, icon_color=icon_color, data=task_id,
++            on_click=self._open_actions,
++        )
++        # Исходный PopupMenuButton наследовал тему IconButton без отдельной
++        # стеклянной оболочки. Сохраняем тот же способ оформления якоря.
++        button._nd_glass_toolbar_action = True
++        super().__init__(content=button, data=task_id,
++                         tooltip="Действия с делом" if show_checkbox else "Действия с заметкой",
++                         secondary_trigger=None, tertiary_trigger=None)
++
++    def __repr__(self):
++        return f"{type(self).__name__}({self._i})"
++
++    def build_items(self):
++        """Материализует пункты один раз и сохраняет актуальные привязки."""
++        if not self.items:
++            self.items = [ft.PopupMenuItem(
++                content=action.label,
++                icon=ft.Icon(action.icon, size=18, color=self._libs.FletIconColor),
++                label_text_style=ft.TextStyle(
++                    size=self._libs.text_size(14), color=self._libs.TxtColor,
++                ),
++            ) for action in self.actions]
++        for item, action in zip(self.items, self.actions):
++            item.on_click = action.on_click
++            item.tooltip = action.tooltip
++        return self.items
++
++    async def _open_actions(self, event):
++        if self._opening:
++            return
++        self._opening = True
++        try:
++            self.build_items()
++            self._libs.prepare(self)
++            # Клиент должен получить пункты и их обработчики до вызова open.
++            self.update()
++            ft.context.disable_auto_update()
++            await self.open(local_position=ft.Offset(48 if self._libs.phone else 0, 0))
++        finally:
++            self._opening = False
++            ft.context.disable_auto_update()
+--- /dev/null
++++ b/tests/test_lazy_task_actions.py
+@@ -0,0 +1,193 @@
++"""Проверки ленивого меню и границ обновления карточки дела."""
++
++from datetime import datetime
++from unittest.mock import AsyncMock, Mock, patch
++
++import flet as ft
++import pytest
++
++from Frontend.task_actions import TaskActionsMenu
++from test_ui_state import make_front
++from test_ui_performance import serialize
++
++
++def menu_for(card):
++    """Находит меню, не создавая его пункты для проверки начального дерева."""
++    pending = [card]
++    while pending:
++        control = pending.pop()
++        if isinstance(control, TaskActionsMenu):
++            return control
++        pending.extend(getattr(control, 'controls', []))
++        content = getattr(control, 'content', None)
++        if isinstance(content, ft.Control):
++            pending.append(content)
++    raise AssertionError('Меню карточки не найдено')
++
++
++def seed(front, count):
++    data = front.back._load()
++    data['tasks'] = [dict(id=str(index), name=f'Дело {index}', status=False,
++                          group='default', created_date='10-11-2026') for index in range(count)]
++    front.back.store.save_all_sections(data)
++    front.render_daily_repeat_tasks()
++    return [control for control in front.tasks_cont.content.controls if isinstance(control.data, str)]
++
++
++def test_thousand_cards_have_no_menu_items_until_opened():
++    front = make_front()
++    cards = seed(front, 1000)
++    assert all(menu_for(card).items == [] for card in cards)
++    menu = menu_for(cards[500])
++    items = menu.build_items()
++    assert len(items) == 4
++    assert sum(len(menu_for(card).items) for card in cards) == 4
++    assert menu.build_items() is items
++    front.render_daily_repeat_tasks()
++    assert next(control for control in front.tasks_cont.content.controls if control.key == '500') is cards[500]
++
++
++@pytest.mark.parametrize('effect', ('none', 'liquid_glass_half', 'liquid_glass'))
++@pytest.mark.parametrize('phone', (False, True))
++@pytest.mark.parametrize('show_checkbox', (False, True))
++def test_lazy_menu_preserves_items_bindings_and_theme(effect, phone, show_checkbox):
++    front = make_front(effect=effect, phone=phone)
++    copy, repeat, edit, delete = Mock(), Mock(), Mock(), Mock()
++    card, delete_target, edit_target, text, checkbox = front.utils.create_row_with_task(
++        'Текст', False, 'record-id', show_checkbox=show_checkbox, on_copy=copy, on_repeat=repeat,
++    )
++    menu = menu_for(card)
++    edit_target.on_click, delete_target.on_click = edit, delete
++    edit_target.tooltip = 'Редактировать запись'
++    assert menu.items == []
++    assert menu.content.data == 'record-id'
++    assert menu.secondary_trigger is menu.tertiary_trigger is None
++    items = menu.build_items()
++    assert [item.content for item in items] == [
++        'Редактировать', 'Скопировать', *(['Сделать повторяющимися'] if show_checkbox else []), 'Удалить',
++    ]
++    assert items[0].tooltip == 'Редактировать запись'
++    assert items[0].on_click is edit and items[-1].on_click is delete
++    assert items[1].on_click is copy
++    if show_checkbox:
++        assert items[2].on_click is repeat
++    assert isinstance(checkbox, ft.Checkbox) is show_checkbox
++    assert all(item.icon.size == 18 for item in items)
++    assert all(item.label_text_style.size == front.utils.libs.text_size(14) for item in items)
++    appearance = card.content.controls[-1 if phone else 0]
++    original = front.utils.libs.prepare(ft.PopupMenuButton(icon_color=front.utils.libs.FletIconColor))
++    themed = appearance.theme.popup_menu_theme
++    assert (themed.color, themed.shape, themed.shadow_color, themed.elevation) == (
++        original.bgcolor, original.shape, original.shadow_color, original.elevation,
++    )
++    front.libs.prepare(card)
++    assert not hasattr(menu.content, '_nd_glass_skin')
++    assert menu.content.style is None
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('phone', (False, True))
++async def test_first_click_updates_items_before_native_open_and_reuses_them(phone):
++    front = make_front(phone=phone)
++    menu = menu_for(seed(front, 1)[0])
++    events = []
++
++    async def opened(**kwargs):
++        assert len(menu.items) == 4
++        assert kwargs['local_position'] == ft.Offset(48 if phone else 0, 0)
++        events.append('open')
++
++    with patch.object(TaskActionsMenu, 'update', side_effect=lambda: events.append('update')), \
++            patch.object(ft.ContextMenu, 'open', new_callable=AsyncMock, side_effect=opened):
++        await menu.content.on_click(Mock(control=menu.content))
++        items = tuple(menu.items)
++        await menu.content.on_click(Mock(control=menu.content))
++    assert events == ['update', 'open', 'update', 'open']
++    assert all(before is after for before, after in zip(items, menu.items))
++
++
++@pytest.mark.parametrize('effect', ('none', 'liquid_glass_half', 'liquid_glass'))
++def test_checkbox_patch_skips_other_cards_and_preserves_glass_undo(effect):
++    front = make_front(effect=effect)
++    cards = seed(front, 150)
++    page = ft.Page(sess=Mock(), web=False)
++    page.views[0].controls = [front.main_cont]
++    serialize(page, initial=True)
++    unchanged_patch = serialize(page)
++    row = cards[0]
++    checkbox = next(control for control in row.content.controls if isinstance(control, ft.Checkbox))
++    with patch.object(front, '_update_control') as update, patch.object(ft.Control, 'update'):
++        checkbox.value = True
++        checkbox.on_change(Mock(control=checkbox))
++    update.assert_called_once_with(row, front.task_overview)
++    assert front.back.get_task(row.key)['status'] is True
++    assert not front.undo_btn.disabled
++    if effect == 'liquid_glass':
++        assert front.undo_btn._nd_glass_skin.opacity == 1
++    with patch.object(ft.Text, 'before_update', autospec=True) as visited:
++        serialize(row)
++        serialize(front.task_overview)
++    assert all(call.args[0].value != 'Дело 149' for call in visited.call_args_list)
++    # Кнопка undo имеет собственное обновление из callback слоя данных.
++    serialize(front.undo_btn)
++    # Сравниваем с неизменённым экраном: его прежние служебные патчи стилей
++    # не должны скрывать пропущенное изменение других контролов.
++    assert serialize(page) == unchanged_patch
++
++
++def test_settings_security_updates_only_changed_controls():
++    front = make_front()
++    widgets, load = front.utils2.build_widgets_for_account_encryption(front.page)
++    front.cloud.read_user_data_text.return_value = ''
++    password = front.utils2.build_widgets_for_security(front.page)
++    switch = password.controls[0]
++    front.page.update.reset_mock()
++    switch.value = True
++    switch.on_change(None)
++    front.page.update.assert_called_once_with(password)
++    assert password.controls[2].visible is False
++    assert password.controls[3].visible is True
++
++
++def test_metadata_updates_form_visibility_and_only_invalid_field():
++    front = make_front()
++    front._update_control = Mock()
++    dialog = front.libs.widgets_for_ask_task('Текст', 'Сохранить', 'Дело')
++    values = front._add_task_metadata_controls(dialog, deadline_as_days=True)
++    controls = dialog['Main Cont'].content.controls
++    selector = next(control for control in controls if isinstance(control, ft.Dropdown)
++                    and control.label is None)
++    field = next(control for control in controls if isinstance(control, ft.TextField)
++                 and control.label == 'Дедлайн через (дней)')
++    selector.value = 'deadline'
++    selector.on_select(None)
++    front._update_control.assert_called_once_with(dialog['Main Cont'])
++    front._update_control.reset_mock()
++    field.value = '0'
++    assert values() is None
++    front._update_control.assert_called_once_with(field)
++
++
++def test_date_picker_can_reopen_after_updating_only_selected_date_field():
++    from flet.utils.object_model import patch_dataclass
++
++    front = make_front()
++    front._update_control = Mock()
++    dialog = front.libs.widgets_for_ask_task('Текст', 'Сохранить', 'Дело')
++    front._add_task_metadata_controls(dialog)
++    picker = front.page.overlay[-1]
++    page = ft.Page(sess=Mock(), web=False)
++    page.views[0].controls = [dialog['Main Cont']]
++    page.overlay.append(picker)
++    serialize(page, initial=True)
++    picker.open = True
++    serialize(picker)
++    # Клиент Flet обновляет свойства без записи серверного изменения.
++    patch_dataclass(picker, {'open': False, 'value': datetime(2026, 11, 11)})
++    picker.on_change(Mock(control=picker, data='2026-11-11'))
++    field = front._update_control.call_args.args[0]
++    assert isinstance(field, ft.TextField)
++    assert field.value == '11-11-2026'
++    serialize(field)
++    picker.open = True
++    assert any(operation.get('value') is True for operation in serialize(picker))
+--- /dev/null
++++ b/bench_ui.py
+@@ -0,0 +1,175 @@
++"""Сравнение сборки карточек и патчей Flet на изолированных данных.
++
++Запуск: python -B bench_ui.py --output bench_ui_before.txt
++Время Flutter/GPU и задержка сети в эти замеры не входят.
++"""
++
++import argparse
++import platform
++import sys
++from importlib.metadata import version
++from pathlib import Path
++from statistics import median
++from time import perf_counter
++from unittest.mock import Mock, patch
++
++from bench_backend import isolated_environment, positive_integer, PROJECT_ROOT
++
++
++def serialized_patch(control, *, initial=False):
++    """Повторяет построение и упаковку патча, отправляемого клиенту Flet."""
++    import flet as ft
++    import msgpack
++    from flet.controls.object_patch import ObjectPatch
++    from flet.messaging.protocol import configure_encode_object_for_msgpack
++
++    result, _, _ = ObjectPatch.from_diff(None if initial else control, control,
++                                       control_cls=ft.BaseControl)
++    return msgpack.packb(result.to_message(),
++                         default=configure_encode_object_for_msgpack(ft.BaseControl))
++
++
++def control_counts(root):
++    """Считает сериализуемые контролы, не обходя ссылки на родителей."""
++    import flet as ft
++    from Frontend.glass import _child_fields
++
++    pending = [root]
++    seen = set()
++    counts = {"controls": 0, "menu_items": 0}
++    while pending:
++        control = pending.pop()
++        if not isinstance(control, ft.BaseControl) or id(control) in seen:
++            continue
++        seen.add(id(control))
++        counts["controls"] += 1
++        counts["menu_items"] += isinstance(control, ft.PopupMenuItem)
++        for name in _child_fields(type(control)):
++            value = getattr(control, name, None)
++            if isinstance(value, (list, tuple)):
++                pending.extend(value)
++            else:
++                pending.append(value)
++    return counts
++
++
++def benchmark(count, effect, phone, repeats):
++    """Собирает карточки заново и отдельно измеряет полный неизменённый патч."""
++    import flet as ft
++    from test_ui_state import make_front
++
++    front = make_front(effect=effect, phone=phone)
++    data = front.back._load()
++    data["tasks"] = [{
++        "id": str(index), "name": f"Тестовое дело {index}", "group": "default",
++        "status": False, "created_date": "10-11-2026", "priority": "Важно",
++        "info_type": "priority", "attachments": [],
++    } for index in range(count)]
++    front.back.store.save_all_sections(data)
++    builds, initial_patches, full_patches, returns, payloads = [], [], [], [], []
++    checkbox_handlers, checkbox_patches = [], []
++    for index in range(repeats + 1):
++        front.back.store.save_all_sections(data)
++        front._task_render_signature = None
++        started = perf_counter()
++        front.render_daily_repeat_tasks()
++        build_ms = (perf_counter() - started) * 1000
++        page = ft.Page(sess=Mock(), web=False)
++        page.views[0].controls = [front.main_cont]
++        started = perf_counter()
++        payload = serialized_patch(page, initial=True)
++        initial_ms = (perf_counter() - started) * 1000
++        started = perf_counter()
++        serialized_patch(page)
++        full_ms = (perf_counter() - started) * 1000
++        started = perf_counter()
++        front.render_daily_repeat_tasks()
++        return_ms = (perf_counter() - started) * 1000
++        card = next(control for control in front.tasks_cont.content.controls
++                    if isinstance(control.data, str))
++        checkbox = next(control for control in card.content.controls if isinstance(control, ft.Checkbox))
++        with patch.object(front, '_update_control') as updates, patch.object(ft.Control, 'update'):
++            checkbox.value = True
++            started = perf_counter()
++            checkbox.on_change(Mock(control=checkbox))
++            checkbox_handler_ms = (perf_counter() - started) * 1000
++        started = perf_counter()
++        for call in updates.call_args_list:
++            for subtree in call.args:
++                serialized_patch(subtree)
++        checkbox_patch_ms = (perf_counter() - started) * 1000
++        if index:
++            builds.append(build_ms)
++            initial_patches.append(initial_ms)
++            full_patches.append(full_ms)
++            returns.append(return_ms)
++            payloads.append(len(payload))
++            checkbox_handlers.append(checkbox_handler_ms)
++            checkbox_patches.append(checkbox_patch_ms)
++    cards = [control for control in front.tasks_cont.content.controls
++             if isinstance(control.data, str)]
++    assert len(cards) == count
++    counts = control_counts(front.main_cont)
++    return dict(tasks=count, effect=effect, layout="phone" if phone else "desktop",
++                build_ms=median(builds), initial_patch_ms=median(initial_patches),
++                full_patch_ms=median(full_patches), unchanged_list_ms=median(returns),
++                checkbox_handler_ms=median(checkbox_handlers), checkbox_patch_ms=median(checkbox_patches),
++                payload_bytes=int(median(payloads)), **counts)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--sizes", nargs="+", type=positive_integer, default=[50, 300, 1000])
++    parser.add_argument("--effects", nargs="+", default=["none", "liquid_glass_half", "liquid_glass"])
++    parser.add_argument("--layouts", nargs="+", choices=("desktop", "phone"), default=["desktop", "phone"])
++    parser.add_argument("--repeats", type=positive_integer, default=5)
++    parser.add_argument("--label", default="Этап 2 — до изменений")
++    parser.add_argument("--output", type=Path)
++    parser.add_argument("--frontend-root", type=Path)
++    args = parser.parse_args()
++    output = args.output.resolve() if args.output else None
++    frontend_root = args.frontend_root.resolve() if args.frontend_root else None
++    if frontend_root is not None and not (frontend_root / 'Frontend/init_page.py').is_file():
++        parser.error('В --frontend-root должна находиться папка Frontend со снимком кода.')
++    if output is not None and (output.name == "secret.py" or any(
++        output.is_relative_to(PROJECT_ROOT / directory) for directory in ("saves", "settings")
++    )):
++        parser.error("Нельзя записывать результат поверх пользовательских данных.")
++    rows = []
++    with isolated_environment():
++        if frontend_root:
++            sys.path.insert(0, str(frontend_root))
++        sys.path.insert(0, str(PROJECT_ROOT / "tests"))
++        for effect in args.effects:
++            for layout in args.layouts:
++                for count in args.sizes:
++                    rows.append(benchmark(count, effect, layout == "phone", args.repeats))
++                    print(f"{args.label}: N={count}, {effect}, {layout} — готово", file=sys.stderr, flush=True)
++    lines = [args.label,
++             f"Python {platform.python_version()}, Flet {version('flet')}; Windows; повторы: {args.repeats}, прогрев: 1.",
++             "Только синтетический web-store; сеть, облако и файлы пользователя не используются.",
++             "Раскладки: desktop/phone; патч измеряется на реальном дереве Page/View без подключённого клиента.",
++             "Числа — медианы, мс. Меню перед замером не открывались; перед full_patch_ms состояние не меняется вручную.",
++             "Служебные повторные патчи стилей Flet учитываются во времени full_patch_ms.",
++             "GPU, задержка сети, открытие нативного меню и физический отклик экрана не измеряются.",
++             "build_ms — принудительная пересборка карточек; unchanged_list_ms — повторный рендер с прежней подписью.",
++             "payload_bytes — размер начального msgpack-патча; controls — число контролов основного экрана.",
++             "checkbox_handler_ms — обработчик с web-store без отправки; checkbox_patch_ms — упаковка запрошенных им поддеревьев.",
++             "Сортировка статусов отключена; отдельное обновление кнопки undo не входит в checkbox_patch_ms.",
++             "",
++             "N | effect | layout | build_ms | initial_patch_ms | full_patch_ms | unchanged_list_ms | payload_bytes | controls | menu_items | checkbox_handler_ms | checkbox_patch_ms",
++             "--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---"]
++    for row in rows:
++        lines.append(f"{row['tasks']} | {row['effect']} | {row['layout']} | {row['build_ms']:.3f} | "
++                     f"{row['initial_patch_ms']:.3f} | {row['full_patch_ms']:.3f} | "
++                     f"{row['unchanged_list_ms']:.3f} | {row['payload_bytes']} | "
++                     f"{row['controls']} | {row['menu_items']} | "
++                     f"{row['checkbox_handler_ms']:.3f} | {row['checkbox_patch_ms']:.3f}")
++    report = "\n".join(lines) + "\n"
++    if output is not None:
++        output.write_text(report, encoding="utf-8")
++    print(report)
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null
++++ b/bench_ui_before.txt
+@@ -0,0 +1,32 @@
++Этап 2 — до изменений
++Python 3.13.5, Flet 0.82.0; Windows; повторы: 5, прогрев: 1.
++Только синтетический web-store; сеть, облако и файлы пользователя не используются.
++Раскладки: desktop/phone; патч измеряется на реальном дереве Page/View без подключённого клиента.
++Числа — медианы, мс. Меню перед замером не открывались; перед full_patch_ms состояние не меняется вручную.
++Служебные повторные патчи стилей Flet учитываются во времени full_patch_ms.
++GPU, задержка сети, открытие нативного меню и физический отклик экрана не измеряются.
++build_ms — принудительная пересборка карточек; unchanged_list_ms — повторный рендер с прежней подписью.
++payload_bytes — размер начального msgpack-патча; controls — число контролов основного экрана.
++checkbox_handler_ms — обработчик с web-store без отправки; checkbox_patch_ms — упаковка запрошенных им поддеревьев.
++Сортировка статусов отключена; отдельное обновление кнопки undo не входит в checkbox_patch_ms.
++
++N | effect | layout | build_ms | initial_patch_ms | full_patch_ms | unchanged_list_ms | payload_bytes | controls | menu_items | checkbox_handler_ms | checkbox_patch_ms
++--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---
++50 | none | desktop | 30.046 | 96.053 | 77.031 | 0.631 | 146969 | 1202 | 200 | 1.189 | 76.095
++300 | none | desktop | 216.141 | 578.376 | 471.242 | 4.567 | 829212 | 6952 | 1200 | 5.510 | 480.171
++1000 | none | desktop | 735.897 | 2102.934 | 1632.274 | 12.450 | 2785522 | 23052 | 4000 | 17.322 | 1584.257
++50 | none | phone | 31.699 | 96.462 | 80.577 | 0.727 | 144511 | 1166 | 200 | 1.423 | 81.541
++300 | none | phone | 195.513 | 551.535 | 449.473 | 3.937 | 805913 | 6666 | 1200 | 5.299 | 453.741
++1000 | none | phone | 684.744 | 1934.884 | 1518.809 | 12.751 | 2658115 | 22066 | 4000 | 18.228 | 1508.111
++50 | liquid_glass_half | desktop | 38.022 | 113.984 | 98.508 | 0.703 | 183013 | 1202 | 200 | 1.253 | 98.668
++300 | liquid_glass_half | desktop | 218.567 | 638.399 | 558.796 | 3.598 | 1046665 | 6952 | 1200 | 5.477 | 572.966
++1000 | liquid_glass_half | desktop | 1025.179 | 2248.049 | 1927.876 | 12.458 | 3465167 | 23052 | 4000 | 17.134 | 1868.902
++50 | liquid_glass_half | phone | 35.652 | 104.002 | 95.625 | 0.769 | 176757 | 1169 | 200 | 1.203 | 94.279
++300 | liquid_glass_half | phone | 194.346 | 672.103 | 531.785 | 4.041 | 995159 | 6669 | 1200 | 6.152 | 529.517
++1000 | liquid_glass_half | phone | 777.261 | 2221.558 | 1791.669 | 12.251 | 3286961 | 22069 | 4000 | 18.225 | 1757.853
++50 | liquid_glass | desktop | 35.380 | 110.597 | 93.647 | 0.690 | 181313 | 1219 | 200 | 1.202 | 95.622
++300 | liquid_glass | desktop | 218.612 | 642.113 | 530.027 | 3.643 | 1001215 | 6969 | 1200 | 5.457 | 524.346
++1000 | liquid_glass | desktop | 945.387 | 2286.743 | 1919.746 | 13.577 | 3297217 | 23069 | 4000 | 16.926 | 1766.085
++50 | liquid_glass | phone | 33.415 | 105.205 | 93.167 | 0.811 | 176757 | 1169 | 200 | 1.251 | 97.765
++300 | liquid_glass | phone | 197.922 | 661.908 | 528.269 | 3.628 | 995159 | 6669 | 1200 | 5.359 | 533.144
++1000 | liquid_glass | phone | 781.977 | 2212.681 | 1802.602 | 12.659 | 3286961 | 22069 | 4000 | 17.601 | 1756.685
+--- /dev/null
++++ b/bench_ui_after.txt
+@@ -0,0 +1,32 @@
++Этап 2 — после изменений
++Python 3.13.5, Flet 0.82.0; Windows; повторы: 5, прогрев: 1.
++Только синтетический web-store; сеть, облако и файлы пользователя не используются.
++Раскладки: desktop/phone; патч измеряется на реальном дереве Page/View без подключённого клиента.
++Числа — медианы, мс. Меню перед замером не открывались; перед full_patch_ms состояние не меняется вручную.
++Служебные повторные патчи стилей Flet учитываются во времени full_patch_ms.
++GPU, задержка сети, открытие нативного меню и физический отклик экрана не измеряются.
++build_ms — принудительная пересборка карточек; unchanged_list_ms — повторный рендер с прежней подписью.
++payload_bytes — размер начального msgpack-патча; controls — число контролов основного экрана.
++checkbox_handler_ms — обработчик с web-store без отправки; checkbox_patch_ms — упаковка запрошенных им поддеревьев.
++Сортировка статусов отключена; отдельное обновление кнопки undo не входит в checkbox_patch_ms.
++
++N | effect | layout | build_ms | initial_patch_ms | full_patch_ms | unchanged_list_ms | payload_bytes | controls | menu_items | checkbox_handler_ms | checkbox_patch_ms
++--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---
++50 | none | desktop | 23.574 | 77.545 | 55.580 | 0.618 | 115719 | 852 | 0 | 1.763 | 1.422
++300 | none | desktop | 179.086 | 481.832 | 348.860 | 3.504 | 641712 | 4852 | 0 | 5.852 | 1.503
++1000 | none | desktop | 611.168 | 1697.512 | 1170.072 | 12.182 | 2146522 | 16052 | 0 | 17.003 | 1.483
++50 | none | phone | 26.465 | 80.973 | 58.483 | 0.829 | 112561 | 816 | 0 | 1.280 | 1.556
++300 | none | phone | 163.335 | 439.858 | 319.777 | 3.604 | 614213 | 4566 | 0 | 5.587 | 1.383
++1000 | none | phone | 535.542 | 1567.773 | 1085.330 | 12.062 | 2019115 | 15066 | 0 | 18.604 | 1.449
++50 | liquid_glass_half | desktop | 29.418 | 92.659 | 76.396 | 0.736 | 151063 | 852 | 0 | 1.391 | 1.711
++300 | liquid_glass_half | desktop | 181.710 | 533.583 | 443.168 | 3.402 | 854965 | 4852 | 0 | 5.206 | 1.648
++1000 | liquid_glass_half | desktop | 625.050 | 1918.571 | 1483.688 | 11.667 | 2826167 | 16052 | 0 | 18.020 | 1.741
++50 | liquid_glass_half | phone | 26.095 | 87.612 | 72.062 | 0.704 | 144807 | 819 | 0 | 1.242 | 1.580
++300 | liquid_glass_half | phone | 157.949 | 493.065 | 401.813 | 3.387 | 803459 | 4569 | 0 | 5.462 | 1.874
++1000 | liquid_glass_half | phone | 532.432 | 1742.720 | 1342.222 | 12.699 | 2647961 | 15069 | 0 | 18.146 | 1.619
++50 | liquid_glass | desktop | 31.761 | 93.840 | 73.814 | 0.697 | 149363 | 869 | 0 | 1.155 | 1.536
++300 | liquid_glass | desktop | 183.566 | 514.158 | 403.716 | 3.629 | 809515 | 4869 | 0 | 4.923 | 1.662
++1000 | liquid_glass | desktop | 706.544 | 1848.660 | 1360.940 | 12.777 | 2658217 | 16069 | 0 | 17.220 | 1.734
++50 | liquid_glass | phone | 26.168 | 85.855 | 70.899 | 0.720 | 144807 | 819 | 0 | 1.439 | 1.667
++300 | liquid_glass | phone | 156.735 | 491.269 | 404.404 | 4.046 | 803459 | 4569 | 0 | 5.231 | 1.665
++1000 | liquid_glass | phone | 532.159 | 1731.438 | 1353.899 | 14.128 | 2647961 | 15069 | 0 | 17.356 | 1.825
+--- /dev/null
++++ b/bench_stage2_report.md
+@@ -0,0 +1,80 @@
++Этап 2 выполнен: ленивые меню карточек и точечные обновления UI.
++
++TaskActionsMenu содержит обычную кнопку с прежним многоточием и создаёт PopupMenuItem, Icon и TextStyle перед первым открытием. Сохранены порядок, подписи, иконки, tooltip и обработчики редактирования, копирования, повторения и удаления. Пункты переиспользуются. Возвращаемая структура create_row_with_task осталась из пяти элементов; delete/edit — лёгкие цели с on_click и tooltip. Привязки Front и NotesMixin сохранены.
++
++Оформление меню берётся из прежнего PopupMenuButton, подготовленного существующими стилями: те же цвет, форма, тень, высота и цвета иконок. Якорь наследует штатную тему IconButton и не получает дополнительную стеклянную оболочку. Обе реализации Flet 0.82 используют общий buildPopupMenuEntries: https://github.com/flet-dev/flet/blob/v0.82.0/packages/flet/lib/src/utils/popup_menu.dart
++
++Чекбокс без сортировки статусов обновляет только карточку и сводку. Кнопка undo обновляется своим callback; её стеклянное оформление также подготавливается отдельно. При сортировке статусов сохранено обновление основного списка, поскольку карточка может переместиться либо фоновая синхронизация могла изменить его состав.
++
++Заменены 37 мест с полным page.update() на обновление контролов или небольшого поддерева. Полные обновления темы, навигации, сервисов, открытия диалогов и регистрации DatePicker/локали сохранены. Количество вызовов без аргументов в init_page.py: 48 → 24; в settings.py: 11 → 1 (оставшийся вызов — резервный путь для ещё не смонтированных контролов).
++
++Ниже медианы пяти повторов для 1000 дел. Патч чекбокса измерен без сортировки статусов; это Python/Flet и упаковка msgpack, не сеть, GPU или полный физический отклик устройства.
++
++| Оформление | Раскладка | Сборка карточек, мс: до → после | Патч чекбокса, мс: до → после | Начальный пакет, байт: до → после |
++|---|---|---:|---:|---:|
++| none | desktop | 735.897 → 611.168 | 1584.257 → 1.483 | 2785522 → 2146522 |
++| none | phone | 684.744 → 535.542 | 1508.111 → 1.449 | 2658115 → 2019115 |
++| liquid_glass_half | desktop | 1025.179 → 625.050 | 1868.902 → 1.741 | 3465167 → 2826167 |
++| liquid_glass_half | phone | 777.261 → 532.432 | 1757.853 → 1.619 | 3286961 → 2647961 |
++| liquid_glass | desktop | 945.387 → 706.544 | 1766.085 → 1.734 | 3297217 → 2658217 |
++| liquid_glass | phone | 781.977 → 532.159 | 1756.685 → 1.825 | 3286961 → 2647961 |
++
++Все 18 профилей (50/300/1000 дел, desktop/phone, три оформления): [bench_ui_before.txt](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/bench_ui_before.txt>) и [bench_ui_after.txt](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/bench_ui_after.txt>). В каждом профиле удалены 7 начальных контролов на карточку; 4000 пунктов меню на 1000 дел заменены нулём до открытия. Оба замера выполнены одним [bench_ui.py](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/bench_ui.py>); для «до» загружался снимок Frontend перед этапом 2, для «после» — текущий код. Данные синтетические, облако отключено. Время обработчика чекбокса с web-store записано отдельно и не смешивается со временем патча.
++
++Проверки: 21 новый UI-тест прошёл; полный прогон — 579 passed, 11 failed, 1810 subtests passed. Набор 11 падений совпал с этапом 1. Журнал: [artifacts/stage2/pytest_stage2.txt](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/pytest_stage2.txt>). Тесты: [tests/test_lazy_task_actions.py](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/tests/test_lazy_task_actions.py>). compileall Frontend Backend и проверка пробелов в diff прошли.
++
++В существующих тестах обновлён поиск ленивого меню. В трёх тестах несмонтированных форм добавлена имитация _update_control: они используют Mock страницы или подменяют открытие формы. Проверки бизнес-логики не ослаблены; отдельные новые тесты проверяют реальные патчи ObjectPatch, отсутствие обхода других карточек, состояние undo и повторное открытие DatePicker.
++
++UI_BUILD_BUDGET, асинхронная сборка и подпись рендера сохранены. Файлы controls.py (SurfaceHost.is_isolated, LazyListView, _StableButtonStyle), glass.py, libs.py, notes.py и reordering.py не менялись. Кэш Backend этапа 1 и обои не изменялись.
++
++Порционная загрузка не внедрена по разрешённому в задании варианту. apply_search_filter и _refresh_task_overview читают уже созданные карточки, а LongPressReorder._record_reorder_items формирует порядок по видимым контролам. _task_render_structure и повторный рендер сверяют структуру полного списка. Ограничение первыми 40 карточками без переработки поиска, счётчиков, разделителей дат и сопоставления порядка скрытых записей изменило бы поведение. LazyListView и существующие кооперативные порции сборки сохранены.
++
++Остаточные ограничения: полная сборка и структурные перестановки больших списков остаются пропорциональны их размеру. Первое открытие меню требует обмена с Python, последующие используют созданные пункты. Полный отклик Flutter, реальный Android и скорость сети не измерялись.
++
++Живая визуальная проверка не завершена: computer-use сообщил, что доступ к Firefox не разрешён; отдельный встроенный браузер получил ERR_EMPTY_RESPONSE для локального тестового стенда. Стенд остановлен. Внешние данные и пользовательские приложения не изменялись.
++
++Вручную: открыть меню первым кликом в обычном и обоих стеклянных оформлениях на ПК/телефоне; проверить положение, размеры и все действия у дела и заметки, в том числе после редактирования. Проверить чекбокс и undo, поиск, сортировку статусов, перетаскивание, даты и повторное открытие DatePicker, импорт/экспорт, шифрование и бэкапы. Отдельно проверить web-режим.
++
++Обоснования точечных замен для описания коммита: исходная строка, новый вызов и причина (те же комментарии стоят в коде).
++
++| Файл и исходная строка | Новый вызов | Причина |
++|---|---|---|
++| [Frontend/init_page.py:273](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:273>) | `self._update_control(card)` | Состояние проверки пароля меняется только внутри карточки входа. |
++| [Frontend/init_page.py:292](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:292>) | `self._update_control(card)` | Ошибка и доступность полей относятся к той же карточке. |
++| [Frontend/init_page.py:1220](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1220>) | `self._update_control(deadline_field)` | Выбор даты меняет только значение этого поля. |
++| [Frontend/init_page.py:1232](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1232>) | `self._update_control(dialog["Main Cont"])` | Переразметка видимых полей ограничена формой метаданных. |
++| [Frontend/init_page.py:1255](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1255>) | `self._update_control(deadline_field)` | Ошибка ввода не затрагивает остальные элементы страницы. |
++| [Frontend/init_page.py:1382](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1382>) | `self._update_control(self.main_cont)` | Перестроен только основной список и его счётчики. |
++| [Frontend/init_page.py:1530](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1530>) | `self._update_control(self.main_cont)` | Новая карточка, прогресс и счётчики находятся в main_cont. |
++| [Frontend/init_page.py:1744](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1744>) | `self._update_control(year_date_field)` | После DatePicker обновляется только поле выбранной даты. |
++| [Frontend/init_page.py:1780](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1780>) | `self._update_control(main_cont)` | Меняется раскладка формы; при первоначальной сборке она ещё не смонтирована. |
++| [Frontend/init_page.py:1799](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1799>) | `self._update_control(entry_interval_rep)` | Подсветка ошибки ограничена полем интервала. |
++| [Frontend/init_page.py:1816](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1816>) | `self._update_control(month_day_entry)` | Подсветка ошибки ограничена полем числа месяца. |
++| [Frontend/init_page.py:1826](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1826>) | `self._update_control(year_date_field)` | Подсветка ошибки ограничена полем годовой даты. |
++| [Frontend/init_page.py:1889](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1889>) | `self._update_control(date_field)` | Выбранная дата отображается в одном поле формы. |
++| [Frontend/init_page.py:1925](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1925>) | `self._update_control(date_field)` | Отсутствующая дата отмечается только в поле даты. |
++| [Frontend/init_page.py:1940](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1940>) | `self._update_control(date_field)` | Ошибка сохранения отображается только у даты. |
++| [Frontend/init_page.py:1997](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:1997>) | `self._update_control(year_date_field)` | Редактор правила меняет только поле годовой даты. |
++| [Frontend/init_page.py:2015](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:2015>) | `self._update_control(dialog["Main Cont"])` | Переразметка ограничена формой редактирования правила. |
++| [Frontend/init_page.py:2032](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:2032>) | `self._update_control(entry_interval)` | Ошибка интервала не требует обновления списка за формой. |
++| [Frontend/init_page.py:2043](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:2043>) | `self._update_control(month_day_entry)` | Обновляется только поле с ошибкой числа месяца. |
++| [Frontend/init_page.py:2048](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:2048>) | `self._update_control(year_date_field)` | Обновляется только поле с отсутствующей годовой датой. |
++| [Frontend/init_page.py:2094](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:2094>) | `self._update_control(date_field)` | Редактор отложенного дела меняет только поле даты. |
++| [Frontend/init_page.py:2127](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:2127>) | `self._update_control(date_field)` | Ошибка в редакторе относится только к отсутствующей дате. |
++| [Frontend/init_page.py:2139](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:2139>) | `self._update_control(date_field)` | Ошибка изменения даты не затрагивает всю страницу. |
++| [Frontend/init_page.py:2812](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:2812>) | `self._update_control(copy_status)` | Результат копирования меняет только текст статуса. |
++| [Frontend/init_page.py:2823](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:2823>) | `self._update_control(content)` | Индикатор и доступность кнопок находятся внутри формы общей группы. |
++| [Frontend/init_page.py:2841](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/init_page.py:2841>) | `self._update_control(content)` | Ошибка и восстановленные кнопки относятся к той же форме. |
++| [Frontend/settings.py:246](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/settings.py:246>) | `self._update_controls(switch, status)` | Настройка шифрования меняет только переключатель и его подпись. |
++| [Frontend/settings.py:256](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/settings.py:256>) | `self._update_controls(switch, status)` | Состояние ожидания ограничено этими двумя контролами. |
++| [Frontend/settings.py:269](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/settings.py:269>) | `self._update_controls(switch, status)` | Результат операции не меняет другие разделы настроек. |
++| [Frontend/settings.py:312](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/settings.py:312>) | `self._update_controls(content)` | Видимость полей и кнопки меняется только в разделе пароля. |
++| [Frontend/settings.py:320](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/settings.py:320>) | `self._update_controls(status)` | Несовпадение паролей меняет только сообщение об ошибке. |
++| [Frontend/settings.py:325](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/settings.py:325>) | `self._update_controls(content)` | Блокировка ввода ограничена разделом пароля. |
++| [Frontend/settings.py:350](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/settings.py:350>) | `self._update_controls(content)` | После сохранения обновляются поля, переключатель и статус раздела. |
++| [Frontend/settings.py:495](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/settings.py:495>) | `self._update_controls(btn_backup, backup_status)` | Отправка бэкапа меняет только свою кнопку и статус. |
++| [Frontend/settings.py:513](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/settings.py:513>) | `self._update_controls(btn_backup, backup_status)` | Завершение выгрузки возвращает доступность той же кнопки. |
++| [Frontend/settings.py:533](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/settings.py:533>) | `self._update_controls(import_button, export_button, status)` | Импорт и экспорт меняют только свои кнопки и сообщение. |
++| [Frontend/settings.py:799](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/artifacts/stage2/before/Frontend/settings.py:799>) | `self._update_controls(row)` | Подпись и пункт меню принадлежат одной строке повторяющегося дела. |
++
++Diff только этапа 2: [bench_stage2.diff](<C:/НУЖНОЕ/Программирование/Python-scripts2/To-do list — копия/bench_stage2.diff>).

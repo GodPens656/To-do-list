@@ -7,6 +7,7 @@ from typing import Any, ForwardRef, get_args
 import flet as ft
 
 from .controls import SurfaceHost
+from .dayplanner import PlannerHost, mix_color, style_widget
 
 
 def is_glass(theme):
@@ -15,19 +16,6 @@ def is_glass(theme):
 
 def is_toolbar_glass(theme):
     return str(theme).startswith("liquid_glass_half_")
-
-
-def mix_color(first, second, amount):
-    """Mix opaque RGB tints; stored theme colors may include an alpha prefix."""
-    def rgb(value):
-        value = {"white": "#FFFFFF", "black": "#000000"}.get(value, value)
-        value = value.split(",", 1)[0].lstrip("#")[-6:]
-        return tuple(int(value[index:index + 2], 16) for index in (0, 2, 4))
-
-    return "#" + "".join(
-        f"{round(a * (1 - amount) + b * amount):02X}"
-        for a, b in zip(rgb(first), rgb(second))
-    )
 
 
 @lru_cache(maxsize=64)
@@ -54,9 +42,26 @@ def glass_border(theme):
     return ft.Border.all(1, _palette(theme)["GlassEdgeColor"])
 
 
-def glass_gradient(theme, *, mobile=False):
+def glass_gradient(theme, *, mobile=False, toolbar=False):
     dark = str(theme).endswith("dark")
     colors = _palette(theme)
+    if mobile and toolbar and is_toolbar_glass(theme):
+        # Narrow specular bands frame a clearer centre, like light refracting
+        # through a curved lens. Keep this paint on the mobile capsule only.
+        return ft.LinearGradient(
+            begin=ft.Alignment.TOP_LEFT,
+            end=ft.Alignment.BOTTOM_RIGHT,
+            colors=[
+                ft.Colors.with_opacity(0.48 if dark else 0.98, "#FFFFFF"),
+                ft.Colors.with_opacity(0.14 if dark else 0.46, "#FFFFFF"),
+                ft.Colors.with_opacity(0.30 if dark else 0.72, "#FFFFFF"),
+                ft.Colors.with_opacity(0.04 if dark else 0.16, "#FFFFFF"),
+                ft.Colors.with_opacity(0.24, colors["ContBgColor"]),
+                ft.Colors.with_opacity(0.18, colors["ProgressColor"]),
+                ft.Colors.with_opacity(0.34 if dark else 0.76, "#FFFFFF"),
+            ],
+            stops=[0, 0.10, 0.18, 0.38, 0.62, 0.82, 1],
+        )
     if mobile:
         return ft.LinearGradient(
             begin=ft.Alignment.TOP_LEFT,
@@ -81,10 +86,13 @@ def glass_surface(container, theme, *, radius=None, compact=False, tint=None,
                   mobile=False, backdrop=False):
     """Apply the material in place, keeping layout, content and events intact."""
     dark = str(theme).endswith("dark")
+    mobile_toolbar = (mobile and is_toolbar_glass(theme)
+                      and getattr(container, "_nd_glass_toolbar", False))
     container.bgcolor = tint
     # A Flutter background gradient replaces the color shader. Keep semantic
     # tints as the background and paint the reflection in the foreground.
-    container.gradient = None if tint is not None else glass_gradient(theme, mobile=mobile)
+    container.gradient = (None if tint is not None else
+                          glass_gradient(theme, mobile=mobile, toolbar=mobile_toolbar))
     container.border_radius = radius if radius is not None else (container.border_radius or 16)
     container.border = glass_border(theme)
     # Only outer panels sample the backdrop. Cards, badges and buttons reuse
@@ -95,6 +103,29 @@ def glass_surface(container, theme, *, radius=None, compact=False, tint=None,
     # panels need to clip their descendants; clipping every card/button adds
     # work while scrolling large lists.
     container.clip_behavior = ft.ClipBehavior.ANTI_ALIAS if backdrop else ft.ClipBehavior.NONE
+    if mobile_toolbar:
+        # Bevel and reflections give the half-glass capsule depth with paint
+        # alone, keeping scrolling free of backdrop filters and extra controls.
+        container.border = ft.Border.all(
+            1.25, ft.Colors.with_opacity(0.66 if dark else 0.98, "#FFFFFF"))
+        container.shadow = ft.BoxShadow(
+            blur_radius=16, spread_radius=-3, offset=ft.Offset(0, 5),
+            color="#40000000" if dark else "#22314D7B",
+        )
+        container.foreground_decoration = ft.BoxDecoration(
+            border_radius=container.border_radius,
+            border=ft.Border.all(0.75, "#70FFFFFF" if dark else "#E6FFFFFF"),
+            gradient=ft.RadialGradient(
+                center=ft.Alignment(-0.85, -0.95), radius=1.5,
+                colors=[
+                    "#34FFFFFF" if dark else "#4CFFFFFF",
+                    "#06FFFFFF", "#00FFFFFF",
+                    "#1AFFFFFF" if dark else "#2EFFFFFF",
+                ],
+                stops=[0, 0.30, 0.72, 1],
+            ),
+        )
+        return container
     if mobile or not backdrop:
         container.shadow = None
         container.foreground_decoration = None
@@ -166,6 +197,19 @@ def glass_button_style(theme, colors, style=None, *, material=False):
     return style
 
 
+def _compact_text_button_padding(padding):
+    if padding is None:
+        return ft.Padding.symmetric(horizontal=12, vertical=6)
+    if isinstance(padding, (int, float)):
+        padding = ft.Padding.all(padding)
+    if isinstance(padding, ft.Padding):
+        return ft.Padding(
+            left=min(padding.left, 12), right=min(padding.right, 12),
+            top=min(padding.top, 6), bottom=min(padding.bottom, 6),
+        )
+    return padding
+
+
 def _button_material(button, theme, colors, *, mobile=False):
     """Put lightweight glass inside the button, preserving its identity/state.
 
@@ -183,9 +227,15 @@ def _button_material(button, theme, colors, *, mobile=False):
         return
     if content is not skin or skin is None:
         style = button.style or ft.ButtonStyle()
+        text_button = (not icon_button and content is not None
+                       and not isinstance(content, (ft.Icon, ft.Image)))
+        if text_button:
+            style.visual_density = ft.VisualDensity.COMPACT
         padding = getattr(button, "_nd_glass_padding", None)
         if padding is None:
             padding = button.padding if icon_button and button.padding is not None else style.padding
+            if text_button:
+                padding = _compact_text_button_padding(padding)
             if padding is None:
                 padding = 8 if icon_button else ft.Padding.symmetric(horizontal=16, vertical=10)
             object.__setattr__(button, "_nd_glass_padding", padding)
@@ -257,8 +307,7 @@ def apply_glass(control, theme, colors, *, mobile=False, recursive_hosts=True):
     Explicit preparation traverses the whole tree. At Flet's update boundary,
     each nested host handles its own children exactly once.
     """
-    if not is_glass(theme):
-        return control
+    glass = is_glass(theme)
     lightweight = is_toolbar_glass(theme)
     if lightweight:
         colors = _light_glass_colors(colors)
@@ -267,14 +316,19 @@ def apply_glass(control, theme, colors, *, mobile=False, recursive_hosts=True):
         "BgColor", "ContBgColor", "BtnColor", "LoadColor", "WarnBgColor",
     )}
 
-    def visit(item, in_backdrop):
+    def visit(item, in_backdrop, dialog_action=False):
         if not isinstance(item, ft.BaseControl) or id(item) in seen:
             return
         seen.add(id(item))
+        style_widget(item, theme, colors)
         # A nested GlassHost may be updated independently by Flet later. Keep
         # its inherited material context so new children do not add filters.
         object.__setattr__(item, "_nd_glass_in_backdrop", in_backdrop)
-        if getattr(item, "_nd_glass_styled", None) != (theme, mobile):
+        dialog_action = dialog_action or getattr(item, "_nd_glass_dialog_action", False)
+        if dialog_action:
+            object.__setattr__(item, "_nd_glass_dialog_action", True)
+        signature = (theme, mobile, dialog_action)
+        if glass and getattr(item, "_nd_glass_styled", None) != signature:
             if isinstance(item, ft.Container):
                 if (getattr(item, "_nd_glass_material", False)
                         or getattr(item, "_nd_glass_toolbar", False)):
@@ -288,8 +342,12 @@ def apply_glass(control, theme, colors, *, mobile=False, recursive_hosts=True):
                         warning = item.bgcolor == colors["WarnBgColor"]
                         # Both effects share the toolbar's transparency. Half
                         # glass paints the same surface without another filter.
-                        glass_surface(item, theme, tint=colors["WarnBgColor"] if warning else None,
-                                      mobile=mobile, backdrop=not lightweight and not in_backdrop)
+                        # Individual task cards keep lightweight material even
+                        # when their surrounding list has no background panel.
+                        tint = colors["WarnBgColor"] if warning else getattr(item, "_nd_glass_tint", None)
+                        glass_surface(item, theme, tint=tint,
+                                      mobile=mobile, backdrop=not lightweight and not in_backdrop
+                                      and not getattr(item, "_nd_glass_card", False))
                 elif lightweight:
                     _light_glass_surface(item, theme)
                 elif item.bgcolor not in (None, ft.Colors.TRANSPARENT) and item.border_radius:
@@ -300,7 +358,7 @@ def apply_glass(control, theme, colors, *, mobile=False, recursive_hosts=True):
             elif isinstance(item, (ft.TextField, ft.Dropdown)):
                 item.filled = True
                 item.fill_color = colors["GlassInputColor"]
-                item.border_radius = 14
+                item.border_radius = 12
                 item.border_width = 1
                 item.border_color = colors["GlassEdgeColor"]
                 item.focused_border_color = colors["ProgressColor"]
@@ -314,10 +372,12 @@ def apply_glass(control, theme, colors, *, mobile=False, recursive_hosts=True):
                     item.bgcolor = colors["GlassPopupColor"]
                     item.menu_style = glass_menu_style(theme, colors)
             elif isinstance(item, ft.ExpansionTile):
-                item.bgcolor = ft.Colors.TRANSPARENT
-                item.collapsed_bgcolor = ft.Colors.TRANSPARENT
+                category = getattr(item, "_nd_planner_category", False)
+                item.bgcolor = colors["BgColor"] if category and lightweight else ft.Colors.TRANSPARENT
+                item.collapsed_bgcolor = colors["BtnColor"] if category and lightweight else ft.Colors.TRANSPARENT
                 shape = ft.RoundedRectangleBorder(
-                    radius=14, side=ft.BorderSide(1, colors["GlassEdgeColor"]),
+                    radius=14,
+                    side=item.shape.side if isinstance(item.shape, ft.RoundedRectangleBorder) else None,
                 )
                 item.shape = item.collapsed_shape = shape
                 item.clip_behavior = ft.ClipBehavior.ANTI_ALIAS
@@ -338,11 +398,46 @@ def apply_glass(control, theme, colors, *, mobile=False, recursive_hosts=True):
                 item.barrier_color = colors["AlertOverlayColor"]
                 if lightweight:
                     item.elevation = 0
+            elif dialog_action and not lightweight and isinstance(item, (ft.Button, ft.TextButton)):
+                # Dialog actions need one Material surface: an intrinsic glass
+                # child can be smaller than the button's minimum hit area,
+                # leaving a second capsule around short labels such as "OK".
+                style = glass_button_style(theme, colors, item.style)
+                fill = getattr(item, "bgcolor", None)
+                skin = getattr(item, "_nd_glass_skin", None)
+                if skin is not None and item.content is skin:
+                    # An action may already have been prepared before it was
+                    # attached to the dialog. Reuse its label/icons and tint.
+                    item.content, fill = skin.content, skin.bgcolor
+                    object.__delattr__(item, "_nd_glass_skin")
+                if fill in (None, ft.Colors.TRANSPARENT, colors["BtnColor"]):
+                    fill = colors.get("GlassButtonTint") or colors["GlassInputColor"]
+                style.bgcolor[ft.ControlState.DEFAULT] = fill
+                style.shape = ft.RoundedRectangleBorder(radius=14)
+                style.padding = ft.Padding.symmetric(horizontal=12, vertical=6)
+                style.visual_density = ft.VisualDensity.COMPACT
+                style.elevation = 0
+                style.shadow_color = ft.Colors.TRANSPARENT
+                item.style = style
+                if isinstance(item, ft.Button):
+                    item.bgcolor = None  # Let the state-aware style supply the fill.
+                item.clip_behavior = ft.ClipBehavior.ANTI_ALIAS
             elif lightweight and isinstance(item, (ft.Button, ft.TextButton, ft.IconButton)):
                 if not getattr(item, "_nd_glass_toolbar_action", False):
-                    # Keep labels, icons, padding, dimensions and semantic
-                    # button colors intact; no material wrapper is needed.
+                    # Desktop text actions get a little more room around the
+                    # label; icon actions keep their dedicated dimensions.
                     style = item.style or ft.ButtonStyle()
+                    if (not mobile and not isinstance(item, ft.IconButton)
+                            and item.content is not None
+                            and not isinstance(item.content, (ft.Icon, ft.Image))):
+                        padding = style.padding
+                        if isinstance(padding, (int, float)):
+                            padding = ft.Padding.all(padding)
+                        if isinstance(padding, ft.Padding):
+                            style.padding = ft.Padding(
+                                left=padding.left + 4, right=padding.right + 4,
+                                top=padding.top + 2, bottom=padding.bottom + 2,
+                            )
                     if style.side is None:
                         style.side = ft.BorderSide(0.5, colors["GlassEdgeColor"])
                     style.overlay_color = colors["HoverColor"]
@@ -354,28 +449,30 @@ def apply_glass(control, theme, colors, *, mobile=False, recursive_hosts=True):
                 item.border_radius = 8
             elif isinstance(item, ft.Divider):
                 item.color = colors["GlassEdgeColor"]
-            object.__setattr__(item, "_nd_glass_styled", (theme, mobile))
+            object.__setattr__(item, "_nd_glass_styled", signature)
 
-        if not lightweight and isinstance(item, (ft.Button, ft.TextButton, ft.IconButton)):
-            if not getattr(item, "_nd_glass_toolbar_action", False):
+        if glass and not lightweight and isinstance(item, (ft.Button, ft.TextButton, ft.IconButton)):
+            if (not getattr(item, "_nd_glass_toolbar_action", False)
+                    and not (dialog_action and isinstance(item, (ft.Button, ft.TextButton)))):
                 _button_material(item, theme, colors, mobile=mobile)
 
-        if not lightweight and isinstance(item, ft.Container) and item.blur is not None:
+        if glass and not lightweight and isinstance(item, ft.Container) and item.blur is not None:
             if in_backdrop:
                 # A panel can have been prepared before being attached to an
                 # already filtered parent. Avoid nested filters in that case.
                 item.blur = item.shadow = item.foreground_decoration = None
             else:
                 in_backdrop = True
-        if not recursive_hosts and item is not control and isinstance(item, GlassHost):
+        if not recursive_hosts and item is not control and isinstance(item, (GlassHost, PlannerHost)):
             return
         for name in _child_fields(type(item)):
             child = getattr(item, name)
+            child_action = name == "actions" if isinstance(item, ft.AlertDialog) else dialog_action
             if isinstance(child, (list, tuple)):
                 for entry in child:
-                    visit(entry, in_backdrop)
+                    visit(entry, in_backdrop, child_action)
             elif isinstance(child, ft.BaseControl):
-                visit(child, in_backdrop)
+                visit(child, in_backdrop, child_action)
 
     visit(control, getattr(control, "_nd_glass_in_backdrop", False))
     return control
@@ -455,8 +552,8 @@ def configure_glass_theme(result, theme, colors):
     )
     result.checkbox_theme = ft.CheckboxTheme(
         fill_color={ft.ControlState.DEFAULT: colors["GlassInputColor"],
-                    ft.ControlState.SELECTED: colors["ProgressColor"]},
-        border_side=edge, shape=ft.RoundedRectangleBorder(radius=6),
+                    ft.ControlState.SELECTED: colors["SuccessColor"]},
+        check_color="#FFFFFF", border_side=edge, shape=ft.CircleBorder(),
     )
     result.scrollbar_theme = ft.ScrollbarTheme(
         thumb_color=ft.Colors.with_opacity(0.35, colors["ProgressColor"]),

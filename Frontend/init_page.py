@@ -2,13 +2,15 @@ import asyncio
 import threading
 from functools import wraps
 from datetime import date, datetime, timezone
+from time import monotonic
 
 import flet as ft
 from .controls import LazyListView
+from .dayplanner import PlannerHost
 from Backend.app_paths import get_assets_dir
 from Backend.core import Backend
 from Backend.extended import Backend2
-from Backend.validation import text_length_error
+from Backend.validation import MAX_GROUP_NAME_LENGTH, MAX_TEXT_LENGTH, text_length_error
 from Backend.attachments import AttachmentQuotaError
 from Backend.cloud import Cloud
 from .libs import Fr_Libs
@@ -16,7 +18,8 @@ from .auth import AuthWidgets
 from .settings import Utils2
 from .main import ALL_TASKS_GROUP_ID, MainWidgets
 from .notes import NotesMixin
-from .attachments import AttachmentEditor
+from .reordering import ReorderingMixin
+from .attachments import AttachmentEditor, clipboard
 from Backend.notifications import NotificationService
 from Backend.autoupdate import AutoUpdateService
 from .theme import (
@@ -26,16 +29,23 @@ from .theme import (
     resolve_theme,
 )
 from Backend.core import local_today
+from Backend.timing import timed
 from .typography import apply_typography
 from .glass import GlassHost, glass_background
 from .wallpaper import WallpaperManager
 
 
 
-class Front(NotesMixin):
+class Front(NotesMixin, ReorderingMixin):
+    # Leave time for loading-game events and wallpaper frames between batches.
+    UI_BUILD_BUDGET = 0.008
+
     def __init__(self, page: ft.Page, web_store=None):
         self.page = page
         self.web = bool(getattr(page, "web", False))
+        self._loading_widget = None
+        self._loading_token = None
+        self._loading_sequence = 0
         self.web_store = web_store
         self.modified_dialog2 = ft.Container()
         self.modified_dialog3 = ft.Container()
@@ -110,9 +120,17 @@ class Front(NotesMixin):
             button_color=self.button_color,
         )
         self.phone = self.back.get_device()
-        # Единый внешний отступ: 10 px на сайте и 20 px
-        # в нативных клиентах.
-        self.page_edge_padding = 10 if self.web else 20
+        # На мобильном сайте начинаем экран без верхнего отступа.
+        # Остальные края: 10 px на сайте и 20 px в нативных клиентах.
+        self.page_edge_padding = (
+            ft.Padding.only(left=10, right=10, bottom=10)
+            if self.web and self.phone else 10 if self.web else 20
+        )
+        self.dialog_padding = self.page_edge_padding if self.phone else ft.Padding.only(
+            top=self.page_edge_padding,
+            left=self.page_edge_padding, right=self.page_edge_padding,
+            bottom=self.page_edge_padding,
+        )
         self.libs = Fr_Libs(
             self.theme,
             self.phone,
@@ -139,13 +157,18 @@ class Front(NotesMixin):
         )
 
         def _on_close(e=None):
+            self._stop_loading_game()
             self.notification_service.stop()
             self.auto_update_service.stop()
             self.wallpaper.stop()
 
         self.page.on_close = _on_close
         self.page.on_app_lifecycle_state_change = self.wallpaper.on_lifecycle
-        self.page.on_disconnect = self.wallpaper.on_disconnect
+        def _on_disconnect(e=None):
+            self._stop_loading_game()
+            self.wallpaper.on_disconnect(e)
+
+        self.page.on_disconnect = _on_disconnect
         self.page.on_connect = self.wallpaper.on_connect
         """Базовые настройки страницы"""
         self.page.title = "Дневник"
@@ -210,6 +233,7 @@ class Front(NotesMixin):
 
     def _reset_root_view(self):
         """Сохраняет корневой View, к которому Flet привязывает сервисы."""
+        self._stop_loading_game()
         self.wallpaper.clear_view(self.root_view)
         self.root_view.route = "/"
         self.root_view.padding = self.page_edge_padding
@@ -246,7 +270,8 @@ class Front(NotesMixin):
                 return
             unlock.disabled = password.disabled = True
             status.value = ""
-            self.page.update()
+            # Состояние проверки пароля меняется только внутри карточки входа.
+            self._update_control(card)
             try:
                 valid = await asyncio.to_thread(self.back2.verify_app_password, password.value)
             except (OSError, ValueError):
@@ -265,7 +290,8 @@ class Front(NotesMixin):
             password.value = ""
             status.value = status.value or "Неверный пароль. Попробуйте ещё раз."
             unlock.disabled = password.disabled = False
-            self.page.update()
+            # Ошибка и доступность полей относятся к той же карточке.
+            self._update_control(card)
 
         unlock.on_click = password.on_submit = submit
         card = self.libs.create_style_cont([
@@ -445,12 +471,17 @@ class Front(NotesMixin):
 
     def apply_dialog_animation_settings(self, *, update=True):
         enabled = self.back2.read_settings()["dialog_animations"]
+        self._dialog_animations_enabled = enabled
         for theme in (self.page.theme, self.page.dark_theme):
             theme.page_transitions = ft.PageTransitionsTheme() if enabled else ft.PageTransitionsTheme(
                 android=ft.PageTransitionTheme.NONE, ios=ft.PageTransitionTheme.NONE,
                 windows=ft.PageTransitionTheme.NONE, macos=ft.PageTransitionTheme.NONE,
                 linux=ft.PageTransitionTheme.NONE,
             )
+        host = getattr(self, "screen_host", None)
+        if self.web and host is not None and host.content is not None:
+            body = host.content.content if isinstance(host.content, ft.AnimatedSwitcher) else host.content
+            self._set_screen_content(body)
         if update:
             self.page.update()
 
@@ -497,7 +528,7 @@ class Front(NotesMixin):
             self.add_input(self.upload_progress)
         actions = self.btns_cont.content
         progress = self.upload_progress_cont if self.phone else None
-        if self.phone and self.libs.glass_mobile:
+        if self.phone:
             self.btns_cont.content = ft.Column([actions, progress], spacing=0)
             labels = ["Настройки", "Аккаунт", "Отмена", "Обновить"]
             if not floating:
@@ -519,7 +550,7 @@ class Front(NotesMixin):
                 ft.Column([self.task_overview, *([search_row] if search_row is not None else []),
                            self.tasks_cont], expand=True,
                           horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
-                self.btns_cont, self.action_panel_position,
+                self.btns_cont, self.action_panel_position, scrollable=self.tasks_cont.content,
             )
         controls = ([self.group_tabs, body] if self.group_panel_position == "top"
                     else [body, self.group_tabs])
@@ -535,6 +566,9 @@ class Front(NotesMixin):
             if button is not None:
                 button.disabled = disabled
                 try:
+                    # При точечном обновлении карточки панель больше не обходится:
+                    # обновляем также стеклянную оболочку самой кнопки отмены.
+                    self.libs.prepare(button)
                     button.update()
                 except RuntimeError:
                     pass
@@ -608,8 +642,7 @@ class Front(NotesMixin):
             modal=True,
             scrollable=True,
             bgcolor=self.ContBgColor,
-            title=ft.Text(" Примечания", color=self.TxtColor,
-                          size=self.libs.text_size(18), weight=ft.FontWeight.W_700),
+            title=self.libs.create_dialog_title("Примечания"),
             content=ft.Container(
                 content=ft.Column([
                     ft.Text("Перед началом работы ознакомьтесь с примечаниями.",
@@ -995,12 +1028,16 @@ class Front(NotesMixin):
     def _on_view_pop(self, e=None):
         self.close_page()
 
-    def _update_control(self, control):
-        """Patch the changed subtree in both web and native clients."""
-        if not isinstance(control, GlassHost):
-            self.libs.prepare(control)
+    def _update_control(self, control, *other_controls):
+        """Отправляет один патч изменённых поддеревьев в web и нативных клиентах."""
+        for subtree in (control, *other_controls):
+            if not isinstance(subtree, (GlassHost, PlannerHost)):
+                self.libs.prepare(subtree)
         try:
-            control.update()
+            if other_controls:
+                self.page.update(control, *other_controls)
+            else:
+                control.update()
         except RuntimeError:
             if self.web:
                 raise
@@ -1018,6 +1055,7 @@ class Front(NotesMixin):
 
     def _set_screen(self, body, *, push=False, reset=False):
         """Переключает экран без маршрутов и лишних полных page.update()."""
+        self._cancel_reordering()
         if reset:
             self.screen_stack = [body]
         elif push:
@@ -1027,11 +1065,31 @@ class Front(NotesMixin):
             self.screen_stack[-1] = body
         else:
             self.screen_stack = [body]
-        self.screen_host.content = body
+        self._set_screen_content(body)
         self._update_screen_host()
+
+    def _set_screen_content(self, body):
+        """Keep browser navigation in one host, with optional fade transitions."""
+        if body is not self._loading_widget:
+            self._stop_loading_game()
+        if self._dialog_animations_enabled:
+            if isinstance(self.screen_host.content, ft.AnimatedSwitcher):
+                self.screen_host.content.content = body
+            else:
+                self.screen_host.content = ft.AnimatedSwitcher(
+                    content=body, expand=True,
+                    transition=ft.AnimatedSwitcherTransition.FADE,
+                    duration=220, reverse_duration=220,
+                    switch_in_curve=ft.AnimationCurve.EASE_IN_OUT,
+                    switch_out_curve=ft.AnimationCurve.EASE_IN_OUT,
+                )
+        else:
+            self.screen_host.content = body
 
     def close_page(self, e=None):
         """Возвращает пользователя с текущей страницы на предыдущую."""
+        self._stop_loading_game()
+        self._cancel_reordering()
         if self._app_locked:
             return
         if not self.web:
@@ -1054,7 +1112,7 @@ class Front(NotesMixin):
         elif self.screen_stack[-1] is self.main_cont:
             self._ensure_current_group()
             self.render_daily_repeat_tasks()
-        self.screen_host.content = self.screen_stack[-1]
+        self._set_screen_content(self.screen_stack[-1])
         self._update_screen_host()
 
     def _refresh_special_task_lists(self):
@@ -1162,7 +1220,8 @@ class Front(NotesMixin):
             picked = self._picker_event_date(event)
             if picked:
                 deadline_field.value = picked.strftime("%d-%m-%Y")
-                self.page.update()
+                # Выбор даты меняет только значение этого поля.
+                self._update_control(deadline_field)
 
         picker = ft.DatePicker(current_date=today, on_change=on_deadline_change,
                                locale=ft.Locale("ru", "RU"))
@@ -1174,7 +1233,8 @@ class Front(NotesMixin):
             deadline_field.visible = selector.value == "deadline"
             deadline_button.visible = selector.value == "deadline" and not deadline_as_days
             priority_dropdown.visible = selector.value == "priority"
-            self.page.update()
+            # Переразметка видимых полей ограничена формой метаданных.
+            self._update_control(dialog["Main Cont"])
 
         selector.on_select = update_visibility
         controls = dialog["Main Cont"].content.controls
@@ -1197,7 +1257,8 @@ class Front(NotesMixin):
                 except (TypeError, ValueError):
                     deadline_field.label = "Введите число от 1 до 3650"
                     deadline_field.border_color = ft.Colors.RED
-                    self.page.update()
+                    # Ошибка ввода не затрагивает остальные элементы страницы.
+                    self._update_control(deadline_field)
                     return None
                 deadline_field.label = "Дедлайн через (дней)"
                 deadline_field.border_color = None
@@ -1217,23 +1278,28 @@ class Front(NotesMixin):
 
     def open_page(self, header, content, cancel_button=None, route="dialog", *, width=None):
         """Открывает экран оптимизированно на сайте и через View на клиентах."""
+        self._stop_loading_game()
+        self._cancel_reordering()
         if cancel_button is not None:
             cancel_button.on_click = self.close_page
+        back = getattr(header, "_nd_dialog_back", None)
+        if back is not None:
+            back.on_click = self.close_page
         body = self.libs.collection_widgets_fo_dialog(header, content, self.border, width=width)
         if self.web:
             self._set_screen(body, push=True)
         else:
             path = f"/{route}-{len(self.page.views)}"
             self.page.views.append(
-                self.libs.view(route=path, controls=[body], padding=self.page_edge_padding)
+                self.libs.view(route=path, controls=[body], padding=self.dialog_padding)
             )
             asyncio.create_task(self.page.push_route(path))
             self.page.update()
             ft.context.disable_auto_update()
         return body
 
-    def _validate_text_length(self, entry, text=None):
-        entry.error = text_length_error(entry.value if text is None else text)
+    def _validate_text_length(self, entry, text=None, *, max_length=MAX_TEXT_LENGTH):
+        entry.error = text_length_error(entry.value if text is None else text, max_length)
         if entry.error:
             self._update_control(entry)
             return False
@@ -1319,13 +1385,34 @@ class Front(NotesMixin):
                 )
                 if tasks_in_group <= 10 and repeat_task:
                     self.render_daily_repeat_tasks()
-                    self.page.update()
+                    # Перестроен только основной список и его счётчики.
+                    self._update_control(self.main_cont)
                     return True
+
+            async def copy_task_name(e):
+                name = self.back.read_name(id_)
+                if name is None:
+                    return
+                try:
+                    await clipboard(self.page).set(name)
+                except Exception:
+                    self.libs.open_dialog(
+                        "Копирование дела", "Не удалось скопировать название дела в буфер обмена.",
+                        self.page,
+                    )
+
+            def make_task_repeating(e):
+                task_data = self.back.get_task(id_)
+                if task_data is not None:
+                    self.open_repeat_dialog(
+                        name=self.back.read_name(id_), group_id=task_data.get("group", "default"),
+                    )
 
             widgets = self.utils.create_row_with_task(
                 delo_obr, status, id_, created_date, target_group_id, deadline, priority, info_type,
                 group_settings=group_settings,
                 attachments=attachments,
+                on_copy=copy_task_name, on_repeat=make_task_repeating,
             )
             row = widgets[0]
             row.data = name_task  # Поиск не зависит от переносов для отображения.
@@ -1379,6 +1466,7 @@ class Front(NotesMixin):
                             task_data.get("priority", "Неважно"),
                             task_data.get("info_type", "created_date"),
                             attachments=task_data.get("attachments"),
+                            on_copy=copy_task_name, on_repeat=make_task_repeating,
                         )
                         rebuilt_row = rebuilt_widgets[0]
                         rebuilt_row.data = new_name
@@ -1420,6 +1508,7 @@ class Front(NotesMixin):
                 self.open_modified_dialog(cont_H, cont_AC, cancel2)
 
             def bind_task_actions(task_widgets, task_row):
+                self._bind_record_reordering(task_row)
                 checkbox = task_widgets[4]
 
                 def save_status_and_refresh(event):
@@ -1429,7 +1518,12 @@ class Front(NotesMixin):
                     if self.current_status_sort:
                         self._reorder_task_cards()
                     self._refresh_task_overview()
-                    self._update_control(self.main_cont)
+                    if self.current_status_sort:
+                        self._update_control(self.main_cont)
+                    else:
+                        # Без сортировки порядок карточек не меняется: достаточно
+                        # самой строки и сводки, без обхода остальных дел.
+                        self._update_control(task_row, self.task_overview)
 
                 checkbox.on_change = save_status_and_refresh
                 task_widgets[1].on_click = lambda e, i=id_, r=task_row: self.page.run_task(
@@ -1445,7 +1539,8 @@ class Front(NotesMixin):
             # entire group screen is still being assembled.
             if not defer_update:
                 self._refresh_task_overview()
-                self.page.update()
+                # Новая карточка, прогресс и счётчики находятся в main_cont.
+                self._update_control(self.main_cont)
             return True
 
     def close_dlg(self, e):
@@ -1622,7 +1717,7 @@ class Front(NotesMixin):
             width=self.libs.width_dialogs * 0.95,
         )
 
-    def open_repeat_dialog(self):
+    def open_repeat_dialog(self, *, name="", group_id=None):
         """Функция для открытия диалога с запросом имени повторяющегося дела
         и его периодичности: ежедневно, еженедельно (день недели),
         ежемесячно (число месяца 1-31), ежегодно (дата) или свой интервал
@@ -1636,6 +1731,8 @@ class Front(NotesMixin):
 
         btn_create_repeat = dialog["btn_create_task"]
         entry_task_rep = dialog["entry_task"]
+        entry_task_rep.value = name
+        self.libs.update_text_counter(entry_task_rep)
         repeat_type_dd = dialog["repeat_type_dd"]
         entry_interval_rep = dialog["entry_interval"]
         weekday_dd = dialog["weekday_dd"]
@@ -1643,6 +1740,8 @@ class Front(NotesMixin):
         year_date_button = dialog["year_date_button"]
         year_date_field = dialog["year_date_field"]
         group_dropdown = self.create_group_dropdown()
+        if group_id is not None:
+            group_dropdown.value = group_id
         main_cont = dialog["Main Cont"]
         main_cont.content.controls.insert(3, group_dropdown)
         metadata_values = self._add_task_metadata_controls(
@@ -1655,7 +1754,8 @@ class Front(NotesMixin):
                 year_date_field.value = picker_value.strftime("%d-%m")
                 year_date_field.label = "Выбранная дата"
                 year_date_field.border_color = None
-            self.page.update()
+            # После DatePicker обновляется только поле выбранной даты.
+            self._update_control(year_date_field)
 
 
         self.page.locale_configuration = ft.LocaleConfiguration(
@@ -1682,7 +1782,7 @@ class Front(NotesMixin):
 
         year_date_button.on_click = open_year_picker
 
-        def update_repeat_widgets(e=None):
+        def update_repeat_widgets(e=None, *, update=True):
             """Показывает набор виджетов, соответствующий выбранной
             периодичности повторения, и скрывает остальные."""
             repeat_type = repeat_type_dd.value
@@ -1691,10 +1791,15 @@ class Front(NotesMixin):
             month_day_entry.visible = repeat_type == "month"
             year_date_button.visible = repeat_type == "year"
             year_date_field.visible = repeat_type == "year"
-            self.page.update()
+            # Меняется раскладка формы; при первоначальной сборке она ещё не смонтирована.
+            if update:
+                self._update_control(main_cont)
 
         repeat_type_dd.on_select = update_repeat_widgets
-        update_repeat_widgets()
+        update_repeat_widgets(update=False)
+        # Новые DatePicker в overlay и локаль относятся к Page: подготовка
+        # диалога сохраняет полный апдейт, последующие выборы меняют только форму.
+        self.page.update()
 
         @self._guard_attachment_quota
         def create_repeat(_):
@@ -1710,7 +1815,8 @@ class Front(NotesMixin):
                 except (TypeError, ValueError):
                     entry_interval_rep.label = "Введите число от 1 до 367"
                     entry_interval_rep.border_color = ft.Colors.RED
-                    self.page.update()
+                    # Подсветка ошибки ограничена полем интервала.
+                    self._update_control(entry_interval_rep)
                     return
                 entry_interval_rep.label = "Повторять через (дней)"
                 entry_interval_rep.border_color = None
@@ -1727,7 +1833,8 @@ class Front(NotesMixin):
                 except (TypeError, ValueError):
                     month_day_entry.label = "Введите число от 1 до 31"
                     month_day_entry.border_color = ft.Colors.RED
-                    self.page.update()
+                    # Подсветка ошибки ограничена полем числа месяца.
+                    self._update_control(month_day_entry)
                     return
                 month_day_entry.label = "Число месяца"
                 month_day_entry.border_color = None
@@ -1737,7 +1844,8 @@ class Front(NotesMixin):
                 if not year_date_field.value:
                     year_date_field.label = "Сначала выберите дату"
                     year_date_field.border_color = ft.Colors.RED
-                    self.page.update()
+                    # Подсветка ошибки ограничена полем годовой даты.
+                    self._update_control(year_date_field)
                     return
                 year_date_field.label = "Выбранная дата"
                 year_date_field.border_color = None
@@ -1751,9 +1859,10 @@ class Front(NotesMixin):
             if metadata is None:
                 return
             task_id = self.back2.create_repeat_task(entry_task_rep.value, backend_type, backend_value, group_id, metadata)
-            self.utils2.add_to_cont_with_repeat_task(
-                entry_task_rep.value, backend_type, backend_value, group_id, task_id, metadata
-            )
+            if hasattr(self.utils2, "cont_with_repeat_task"):
+                self.utils2.add_to_cont_with_repeat_task(
+                    entry_task_rep.value, backend_type, backend_value, group_id, task_id, metadata
+                )
             self.close_page()
 
         btn_create_repeat.on_click = create_repeat
@@ -1799,7 +1908,8 @@ class Front(NotesMixin):
                 date_field.value = picker_value.strftime("%d-%m-%Y")
                 date_field.label = "Дата добавления"
                 date_field.border_color = None
-            self.page.update()
+            # Выбранная дата отображается в одном поле формы.
+            self._update_control(date_field)
 
         self.page.locale_configuration = ft.LocaleConfiguration(
             supported_locales=[ft.Locale("ru", "RU"), ft.Locale("en", "GB")],
@@ -1835,7 +1945,8 @@ class Front(NotesMixin):
             if not date_field.value:
                 date_field.label = "Сначала выберите дату"
                 date_field.border_color = ft.Colors.RED
-                self.page.update()
+                # Отсутствующая дата отмечается только в поле даты.
+                self._update_control(date_field)
                 return
 
             metadata = metadata_values()
@@ -1850,7 +1961,8 @@ class Front(NotesMixin):
             if not created:
                 date_field.label = "Некорректная дата"
                 date_field.border_color = ft.Colors.RED
-                self.page.update()
+                # Ошибка сохранения отображается только у даты.
+                self._update_control(date_field)
                 return
 
             self.utils2.add_to_cont_with_postponed_task(
@@ -1907,7 +2019,8 @@ class Front(NotesMixin):
             if picker_value is not None:
                 year_date_field.value = picker_value.strftime("%d-%m")
                 year_date_field.border_color = None
-            self.page.update()
+            # Редактор правила меняет только поле годовой даты.
+            self._update_control(year_date_field)
 
         year_picker = ft.DatePicker(
             first_date=date(local_today(self.web, self.page).year, 1, 1), current_date=local_today(self.web, self.page), value=local_today(self.web, self.page),
@@ -1918,17 +2031,21 @@ class Front(NotesMixin):
             self.page.overlay.append(year_picker)
         year_date_button.on_click = lambda _: (setattr(year_picker, "open", True), self.page.update())
 
-        def update_repeat_widgets(e=None):
+        def update_repeat_widgets(e=None, *, update=True):
             selected = repeat_type_dd.value
             entry_interval.visible = selected == "custom"
             weekday_dd.visible = selected == "week"
             month_day_entry.visible = selected == "month"
             year_date_button.visible = selected == "year"
             year_date_field.visible = selected == "year"
-            self.page.update()
+            # Переразметка ограничена формой редактирования правила.
+            if update:
+                self._update_control(dialog["Main Cont"])
 
         repeat_type_dd.on_select = update_repeat_widgets
-        update_repeat_widgets()
+        update_repeat_widgets(update=False)
+        # Регистрацию новых DatePicker в overlay оставляем полному апдейту.
+        self.page.update()
 
         @self._guard_attachment_quota
         def save(_):
@@ -1942,7 +2059,8 @@ class Front(NotesMixin):
                         raise ValueError
                 except (TypeError, ValueError):
                     entry_interval.label, entry_interval.border_color = "Введите число от 1 до 367", ft.Colors.RED
-                    self.page.update()
+                    # Ошибка интервала не требует обновления списка за формой.
+                    self._update_control(entry_interval)
                     return
             elif selected == "week":
                 backend_type, backend_value = "week", int(weekday_dd.value)
@@ -1953,12 +2071,14 @@ class Front(NotesMixin):
                         raise ValueError
                 except (TypeError, ValueError):
                     month_day_entry.label, month_day_entry.border_color = "Введите число от 1 до 31", ft.Colors.RED
-                    self.page.update()
+                    # Обновляется только поле с ошибкой числа месяца.
+                    self._update_control(month_day_entry)
                     return
             elif selected == "year":
                 if not year_date_field.value:
                     year_date_field.label, year_date_field.border_color = "Сначала выберите дату", ft.Colors.RED
-                    self.page.update()
+                    # Обновляется только поле с отсутствующей годовой датой.
+                    self._update_control(year_date_field)
                     return
                 backend_type, backend_value = "year", year_date_field.value
             else:
@@ -2004,7 +2124,8 @@ class Front(NotesMixin):
                 date_field.value = picker_value.strftime("%d-%m-%Y")
                 date_field.label = "Дата добавления"
                 date_field.border_color = None
-            self.page.update()
+            # Редактор отложенного дела меняет только поле даты.
+            self._update_control(date_field)
 
         picker = ft.DatePicker(
             first_date=date(local_today(self.web, self.page).year, 1, 1),
@@ -2037,7 +2158,8 @@ class Front(NotesMixin):
             if not date_field.value:
                 date_field.label = "Сначала выберите дату"
                 date_field.border_color = ft.Colors.RED
-                self.page.update()
+                # Ошибка в редакторе относится только к отсутствующей дате.
+                self._update_control(date_field)
                 return
 
             updated_metadata = metadata_values()
@@ -2049,19 +2171,39 @@ class Front(NotesMixin):
             else:
                 date_field.label = "Некорректная дата"
                 date_field.border_color = ft.Colors.RED
-                self.page.update()
+                # Ошибка изменения даты не затрагивает всю страницу.
+                self._update_control(date_field)
 
         dialog["btn_create_task"].on_click = save
         entry.on_submit = save
         self.open_modified_dialog3(dialog["Header"], dialog["Main Cont"], dialog["cancel"])
 
+    def _stop_loading_game(self, loading_token=None):
+        """Stop only the owner of a completion; stale callbacks are harmless."""
+        current = getattr(self, "_loading_token", None)
+        if loading_token is not None:
+            matches = current is loading_token if self.web else current == loading_token
+            if not matches:
+                return
+        loading = getattr(self, "_loading_widget", None)
+        self._loading_widget = self._loading_token = None
+        if loading is not None:
+            loading.stop()
+
     def _open_loading_view(self):
         """Открывает загрузку подходящим для платформы способом."""
+        self._stop_loading_game()
         loading = self.main_widgets.build_loading_widget()
+        self._loading_widget = loading
         if self.web:
+            self._loading_token = loading
             self._set_screen(loading, push=True)
             return loading
-        loading_route = f"/loading-{len(self.page.views)}"
+        # View depth is reused after Back; a previous completion must never
+        # close a newly opened loading screen at that same depth.
+        self._loading_sequence += 1
+        loading_route = f"/loading-{self._loading_sequence}"
+        self._loading_token = loading_route
         self.page.views.append(
             self.libs.view(
                 route=loading_route,
@@ -2075,14 +2217,27 @@ class Front(NotesMixin):
 
     def _close_loading_view(self, loading_token):
         """Закрывает экран загрузки, если он всё ещё открыт."""
+        self._stop_loading_game(loading_token)
         if self.web:
             if self.screen_stack and self.screen_stack[-1] is loading_token:
-                self.close_page()
+                if len(self.screen_stack) > 1:
+                    self.close_page()
+                else:
+                    self.show_groups()
+            else:
+                self.screen_stack[:] = [s for s in self.screen_stack if s is not loading_token]
             return
-        if self.page.views and self.page.views[-1].route == loading_token:
-            self.page.views.pop()
-            asyncio.create_task(self.page.push_route(self.page.views[-1].route))
-        self.page.update()
+        for index, view in enumerate(self.page.views):
+            if view.route == loading_token:
+                was_top = index == len(self.page.views) - 1
+                del self.page.views[index]
+                if was_top:
+                    if not self.wallpaper.view_controls(self.page.views[-1]):
+                        self.show_groups()
+                        return
+                    asyncio.create_task(self.page.push_route(self.page.views[-1].route))
+                self.page.update()
+                break
 
     def login(self, login, password):
         """Функция для начала авторизации"""
@@ -2117,9 +2272,9 @@ class Front(NotesMixin):
                     "Авторизация", "Вы успешно вошли в аккаунт", self.page
                 )
 
-                # Возвращаемся к корневому экрану групп дел и обновляем данные —
-                # так же, как это происходит при первом запуске приложения.
-                self.update_tasks(self.show_groups)
+                # Данные аккаунта уже скачаны при входе. Обновляем интерфейс
+                # и общие группы без повторной загрузки личных дел.
+                self.update_tasks(self.show_groups, refresh_cloud=False)
 
         self.page.run_task(do_login)
 
@@ -2178,7 +2333,57 @@ class Front(NotesMixin):
 
     def render_daily_repeat_tasks(self):
         """Перестраивает список дел текущей группы без смены экрана."""
+        self._task_render_generation = getattr(self, "_task_render_generation", 0) + 1
+        for _ in self._iter_task_render():
+            pass
+
+    @timed
+    async def _render_tasks_async(self, *, loading_widget=None):
+        """Build controls on the page loop, yielding after a small CPU budget."""
+        self._task_render_generation = getattr(self, "_task_render_generation", 0) + 1
+        generation = self._task_render_generation
+
+        def is_current():
+            return (generation == self._task_render_generation
+                    and (loading_widget is None or self._loading_widget is loading_widget))
+
+        render_data = await asyncio.to_thread(self._read_task_render_data, self.current_group_id)
+        if not is_current():
+            return False
+        steps = self._iter_task_render(incremental=True, render_data=render_data)
+        started = monotonic()
+        try:
+            for _ in steps:
+                if monotonic() - started >= self.UI_BUILD_BUDGET:
+                    await asyncio.sleep(0)
+                    # Navigation or another render may have replaced this list
+                    # while we yielded. Never append stale cards to its result.
+                    if not is_current():
+                        return False
+                    started = monotonic()
+        finally:
+            steps.close()
+        return True
+
+    def _read_task_render_data(self, group_id):
+        """Read/decrypt storage before constructing controls on the page loop."""
         groups = self.back.get_groups()
+        group_id = self._available_task_group(group_id, groups)
+        notes_group = any(group["id"] == group_id and group.get("type") == "notes"
+                          for group in groups)
+        group_settings = self.back.get_group_settings(None if group_id == ALL_TASKS_GROUP_ID else group_id)
+        if notes_group:
+            records = self.back.read_notes(group_id)
+        else:
+            self.back.migrate_groups_storage()
+            records = [task for task in self.back.read_tasks()
+                       if group_id == ALL_TASKS_GROUP_ID or (task.get("group") or "default") == group_id]
+        return groups, group_settings, records
+
+    def _iter_task_render(self, *, incremental=False, render_data=None):
+        groups, group_settings, records = (
+            render_data if render_data is not None else self._read_task_render_data(self.current_group_id)
+        )
         self._ensure_current_group(groups)
         all_tasks = self.current_group_id == ALL_TASKS_GROUP_ID
         self._notes_group = any(group["id"] == self.current_group_id and group.get("type") == "notes"
@@ -2189,15 +2394,8 @@ class Front(NotesMixin):
         self.empty_state.content.controls[0].icon = (
             ft.Icons.NOTES_ROUNDED if self._notes_group else ft.Icons.CHECKLIST_ROUNDED
         )
-        group_settings = self.back.get_group_settings(None if all_tasks else self.current_group_id)
         self.show_completion_counter = group_settings["show_completion_counter"]
         self.task_heading.visible = group_settings["show_group_title"]
-        if self._notes_group:
-            records = self.back.read_notes(self.current_group_id)
-        else:
-            self.back.migrate_groups_storage()
-            records = [task for task in self.back.read_tasks()
-                       if self._task_group_is_visible(task.get("group", "default"))]
         # Returning from a dialog should retain mounted cards and scroll state
         # when the data, presentation settings and deadline colors are current.
         signature = (id(self.tasks_cont), self.current_group_id, self.current_sort,
@@ -2214,6 +2412,7 @@ class Front(NotesMixin):
             self.apply_search_filter(self.current_search)
             self._refresh_group_tabs(groups)
             return
+        self._cancel_reordering()
         base = []
         if self.phone:
             base.append(self.search_row_widget)
@@ -2221,9 +2420,15 @@ class Front(NotesMixin):
 
         # Все дела строятся одним списком и разделяются по дате создания.
         if self._notes_group:
-            self._render_notes(group_settings, notes=records)
+            if incremental:
+                yield from self._iter_note_cards(group_settings, notes=records)
+            else:
+                self._render_notes(group_settings, notes=records)
         else:
-            self.before_load(group_settings, groups=groups, tasks=records)
+            if incremental:
+                yield from self._iter_task_cards(group_settings, groups=groups, tasks=records)
+            else:
+                self.before_load(group_settings, groups=groups, tasks=records)
         self._task_render_signature = signature
         self.apply_search_filter(self.current_search)
         self._refresh_group_tabs(groups)
@@ -2253,6 +2458,10 @@ class Front(NotesMixin):
         в один день, отображаются подряд, а между делами с разными датами
         создания вставляется обычный Divider. Если настройка выключена,
         дела отображаются одним списком без разделителей."""
+        for _ in self._iter_task_cards(group_settings, groups=groups, tasks=tasks):
+            pass
+
+    def _iter_task_cards(self, group_settings=None, *, groups=None, tasks=None):
         if tasks is None:
             self.back.migrate_groups_storage()
             tasks = self.back.read_tasks()
@@ -2294,11 +2503,13 @@ class Front(NotesMixin):
                 defer_update=True,
                 attachments=data.get("attachments"),
             )
+            yield
 
     def show_groups(self, e=None):
         """Показывает список дел с вкладками групп на корневом экране."""
         if self._app_locked:
             return
+        self._stop_loading_game()
         self._ensure_current_group()
         self._load_default_task_filter()
         self.render_daily_repeat_tasks()
@@ -2316,12 +2527,18 @@ class Front(NotesMixin):
 
     def _ensure_current_group(self, groups=None):
         groups = self.back.get_groups() if groups is None else groups
-        if self.current_group_id != ALL_TASKS_GROUP_ID and not any(
-            group["id"] == self.current_group_id for group in self._visible_groups(groups)
-        ):
-            self.current_group_id = ALL_TASKS_GROUP_ID
+        group_id = self._available_task_group(self.current_group_id, groups)
+        if self.current_group_id != group_id:
+            self.current_group_id = group_id
             self.current_search = self.search_field.value = ""
             self._load_default_task_filter()
+
+    def _available_task_group(self, group_id, groups):
+        if group_id == ALL_TASKS_GROUP_ID or any(
+            group["id"] == group_id for group in self._visible_groups(groups)
+        ):
+            return group_id
+        return ALL_TASKS_GROUP_ID
 
     def _task_group_is_visible(self, group_id):
         return self.current_group_id == ALL_TASKS_GROUP_ID or (group_id or "default") == self.current_group_id
@@ -2342,17 +2559,18 @@ class Front(NotesMixin):
         signature = [(group["id"], group["name"], group.get("type"), group.get("is_shared"))
                      for group in groups]
         if signature != getattr(self, "_group_tabs_signature", None):
+            self._cancel_reordering()
             self._group_tabs_signature = signature
             self.group_tab_bar.tabs = [
                 ft.Tab(
-                    label=ft.Row([
+                    label=self._wrap_group_tab(group["id"], ft.Row([
                         ft.Icon(ft.Icons.NOTES_ROUNDED if group.get("type") == "notes"
                                 else ft.Icons.CHECKLIST_ROUNDED, size=18),
                         ft.Text(group["name"] if len(group["name"]) <= 24
                                 else group["name"][:23] + "…", max_lines=1),
                         *([ft.Icon(ft.Icons.LINK_ROUNDED, size=16)]
                           if group.get("is_shared") else []),
-                    ], spacing=8, tight=True),
+                    ], spacing=8, tight=True)),
                     data=group["id"], tooltip=group["name"], height=40,
                 ) for group in groups
             ]
@@ -2386,12 +2604,13 @@ class Front(NotesMixin):
         """Управление группами открывается отдельно от переключения вкладок."""
         if self._app_locked:
             return
+        self._stop_loading_game()
 
         if self._groups_screen is None:
             self._groups_column = LazyListView(
                 scroll=ft.ScrollMode.AUTO, spacing=10, expand=True,
                 build_controls_on_demand=True)
-            header = self.libs.create_style_header("Управление группами")
+            header = self.libs.create_style_header("Управление группами", on_back=self.close_page)
             self._groups_screen = self._build_groups_body(header, self._groups_column)
 
         self._refresh_group_management()
@@ -2400,7 +2619,7 @@ class Front(NotesMixin):
         else:
             self.page.views.append(self.libs.view(
                 route=f"/group-management-{len(self.page.views)}",
-                controls=[self._groups_screen], padding=self.page_edge_padding,
+                controls=[self._groups_screen], padding=self.dialog_padding,
             ))
             asyncio.create_task(self.page.push_route(self.page.views[-1].route))
             self.page.update()
@@ -2409,6 +2628,7 @@ class Front(NotesMixin):
     def _refresh_group_management(self):
         if self._groups_column is None:
             return
+        self._cancel_reordering()
         self._settings_screens.clear()
         self._ensure_current_group()
         self._refresh_group_tabs()
@@ -2443,7 +2663,7 @@ class Front(NotesMixin):
             border=ft.Border.all(1, self.libs.colors["SoftBorderColor"]),
             border_radius=16, padding=6)
         floating = self.phone and self.libs.glass_mobile and self.action_panel_position == "bottom"
-        if self.phone and self.libs.glass_mobile:
+        if self.phone:
             labels = ["Назад", "Отмена"] if floating else ["Назад", "Добавить", "Отмена"]
             self.libs.style_glass_toolbar(self.groups_btns_cont, actions, labels=labels)
         elif self.libs.glass_toolbar:
@@ -2456,12 +2676,11 @@ class Front(NotesMixin):
                 self.groups_btns_cont, actions, self.action_panel_position,
                 progress=self.groups_progress_cont)
             # The outer panel receives a bounded height from this screen.
-            # Its ListView fills only the space left by the action panel.
             main.content = self.libs.dock_action_panel(
                 self.libs.host(content=groups_column, expand=True),
-                self.groups_btns_cont, self.action_panel_position)
+                self.groups_btns_cont, self.action_panel_position, scrollable=groups_column)
             body = main
-        top_padding = 0 if self.web else self.libs.height_for_dlg_spacer + 10
+        top_padding = self.libs.height_for_dlg_spacer + 10 if self.phone and not self.web else 0
         frame = self.libs.host(content=ft.Column([
             header,
             body,
@@ -2485,7 +2704,7 @@ class Front(NotesMixin):
             create.width = create.height = 56
             if self.phone and self.libs.glass:
                 self.libs.style_glass_add_button(create)
-            self.groups_add_btn = create
+        self.groups_add_btn = create
         back = self.libs.build_button_with_image("nazad", "Назад к делам", compact=False)
         back.on_click = self.close_page
         controls = [back] if floating else [back, create]
@@ -2522,14 +2741,15 @@ class Front(NotesMixin):
 
         def edit_group(_=None, ident=group_id, old_name=group_name):
             dialog = self.libs.widgets_for_ask_task(
-                "Введите новое название группы", "Сохранить", "Редактирование группы"
+                "Введите новое название группы", "Сохранить", "Редактирование группы",
+                max_length=MAX_GROUP_NAME_LENGTH,
             )
             entry = dialog["entry_task"]
             entry.value = old_name
-            self.libs.update_text_counter(entry)
+            self.libs.update_text_counter(entry, MAX_GROUP_NAME_LENGTH)
 
             def save(_):
-                if not self._validate_text_length(entry):
+                if not self._validate_text_length(entry, max_length=MAX_GROUP_NAME_LENGTH):
                     return
                 if self.back.rename_group(ident, entry.value):
                     self.cloud.alg_for_redact()
@@ -2579,7 +2799,7 @@ class Front(NotesMixin):
             ft.Container(
                 content=ft.Icon(ft.Icons.NOTES_ROUNDED if is_notes else ft.Icons.FOLDER_OPEN_ROUNDED,
                                 size=22, color=self.libs.FletIconColor),
-                bgcolor=self.libs.BgColor, padding=10, border_radius=12,
+                padding=10,
             ),
             ft.Column([
                 ft.Text(group_name, size=self.libs.text_size(16), weight=ft.FontWeight.W_600,
@@ -2596,7 +2816,9 @@ class Front(NotesMixin):
         group_btn.expand = True
         group_btn.on_click = None if group.get("is_shared") else edit_group
         group_btn.tooltip = None if group.get("is_shared") else "Редактировать группу"
-        groups_column.controls.append(ft.Row([group_btn, menu]))
+        row = ft.Row([group_btn, menu], key=group_id)
+        self._bind_group_reordering(row, group_btn)
+        groups_column.controls.append(row)
 
     def _open_share_group_dialog(self, group):
         password = ft.TextField(label="Пароль общей группы", password=True,
@@ -2623,7 +2845,8 @@ class Front(NotesMixin):
                 copy_status.value = "Не удалось скопировать название. Выделите и скопируйте его вручную."
                 copy_status.color = ft.Colors.RED
             copy_status.visible = True
-            self.page.update()
+            # Результат копирования меняет только текст статуса.
+            self._update_control(copy_status)
 
         create = self.libs.create_style_button("Сделать общей")
         cancel = self.libs.create_style_button("Назад")
@@ -2634,7 +2857,8 @@ class Front(NotesMixin):
                 return
             create.disabled = password.disabled = cancel.disabled = True
             progress.visible = True
-            self.page.update()
+            # Индикатор и доступность кнопок находятся внутри формы общей группы.
+            self._update_control(content)
             success = False
             try:
                 await asyncio.to_thread(self.back.make_group_shared, group["id"], password.value or "")
@@ -2652,7 +2876,8 @@ class Front(NotesMixin):
                 password.value = ""
                 self._finish_group_edit()
             else:
-                self.page.update()
+                # Ошибка и восстановленные кнопки относятся к той же форме.
+                self._update_control(content)
 
         create.on_click = share
         password.on_submit = share
@@ -2674,6 +2899,7 @@ class Front(NotesMixin):
             "Создать",
             "Новая группа",
             warning_text="Не создавайте одинаковые группы",
+            max_length=MAX_GROUP_NAME_LENGTH,
         )
         entry = dialog["entry_task"]
         entry.label = "Название группы"
@@ -2688,7 +2914,7 @@ class Front(NotesMixin):
         dialog['Main Cont'].content.controls.insert(-1, group_type)
 
         def save(_):
-            if not self._validate_text_length(entry):
+            if not self._validate_text_length(entry, max_length=MAX_GROUP_NAME_LENGTH):
                 return
             group_id = self.back.create_group(entry.value, group_type=group_type.value)
             if group_id:
@@ -2707,10 +2933,21 @@ class Front(NotesMixin):
         self.open_modified_dialog(dialog["Header"], dialog["Main Cont"], dialog["cancel"])
 
 
-    def update_tasks(self, on_complete=None):
+    def _refresh_task_data(self, refresh_cloud):
+        """Network and storage preparation before building the task controls."""
+        if refresh_cloud:
+            self.cloud.alg_for_start_app()
+        else:
+            self.cloud.sync_shared_groups()
+        self.notification_service.data_changed()
+        self.check_and_add_repeat_task()
+        self.check_and_add_postponed_task()
+
+    def update_tasks(self, on_complete=None, *, refresh_cloud=True):
         """Функция для обновления дел.
 
         on_complete вызывается после завершения обновления интерфейса.
+        refresh_cloud=False используется после входа с уже загруженными делами.
         """
         if self._app_locked:
             return
@@ -2723,44 +2960,40 @@ class Front(NotesMixin):
         self.border.visible = self.status_border
         self.notification_service.start()
 
-        base = []
-        if self.phone:
-            base.append(self.search_row_widget)
-        else:
-            base.append(ft.Row([], expand=True))
-
         if self.load_screen:
             loading_token = self._open_loading_view()
+            loading_widget = self._loading_widget
 
             async def do_update_and_finish():
-                await asyncio.to_thread(self.cloud.alg_for_start_app)
-                self.notification_service.data_changed()
+                try:
+                    await asyncio.to_thread(self._refresh_task_data, refresh_cloud)
+                    if self._loading_widget is not loading_widget:
+                        return
+                    if on_complete in (self.show_groups, self.show_start_screen):
+                        # These screens restore the saved filter. Do that before
+                        # the cooperative build to avoid a second synchronous one.
+                        self._load_default_task_filter()
+                    if not await self._render_tasks_async(loading_widget=loading_widget):
+                        return
+                    if self._loading_widget is not loading_widget:
+                        return
 
-                self.tasks_cont.content.controls = base
-                if not self.web:
-                    self.before_load()
-                self.check_and_add_repeat_task()
-                self.check_and_add_postponed_task()
-                self.render_daily_repeat_tasks()
-
-                if on_complete:
-                    on_complete()
-                else:
+                    self._stop_loading_game(loading_token)
+                    if on_complete:
+                        on_complete()
+                    print("end")
+                except Exception:
+                    self.libs.open_dialog(
+                        "Обновление дел",
+                        "Не удалось загрузить дела. Проверьте подключение и попробуйте ещё раз.",
+                        self.page,
+                    )
+                finally:
                     self._close_loading_view(loading_token)
-                print("end")
 
             self.page.run_task(do_update_and_finish)
         else:
-            self.cloud.alg_for_start_app()
-
-            self.notification_service.data_changed()
-
-            self.tasks_cont.content.controls = base
-
-            if not self.web:
-                self.before_load()
-            self.check_and_add_repeat_task()
-            self.check_and_add_postponed_task()
+            self._refresh_task_data(refresh_cloud)
             self.render_daily_repeat_tasks()
             if on_complete:
                 on_complete()

@@ -94,7 +94,7 @@ class Utils3:
         nazad = self.libs.create_style_button('Назад')
 
         main = self.libs.create_style_cont(
-            [txt, nazad]
+            [txt, nazad], framed=True,
         )
 
         return header, main, nazad
@@ -116,7 +116,7 @@ class Utils3:
         nazad = self.libs.create_style_button('Назад')
 
         main = self.libs.create_style_cont(
-            [txt, nazad]
+            [txt, nazad], framed=True,
         )
 
         return header, main, nazad
@@ -128,7 +128,7 @@ class Utils3:
             'Примечания'
         )
         nazad = self.libs.create_style_button('Назад')
-        main = self.libs.create_style_cont([self.create_notes_text(), nazad])
+        main = self.libs.create_style_cont([self.create_notes_text(), nazad], framed=True)
         return header, main, nazad
 
     def create_notes_text(self):

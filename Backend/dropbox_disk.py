@@ -140,8 +140,12 @@ class DropboxDisk:
         return "/" + "/".join(parts) if parts else ""
 
     def _call(self, method, *args, **kwargs):
+        return self._call_client(self._login(), method, *args, **kwargs)
+
+    @staticmethod
+    def _call_client(client, method, *args, **kwargs):
         try:
-            return getattr(self._login(), method)(*args, **kwargs)
+            return getattr(client, method)(*args, **kwargs)
         except exceptions.ApiError as exc:
             error = _path_error(exc.error)
             if getattr(error, "is_not_found", lambda: False)():
@@ -237,37 +241,43 @@ class DropboxDisk:
                     stream.close()
 
     def download(self, source, destination, **kwargs):
+        path = self._path(source)
         with self._lock:
-            meta, response = self._call("files_download", self._path(source))
-            # Validate before replacing a local file or writing into a caller's stream.
-            with tempfile.TemporaryFile() as temporary:
-                digest, size = _ContentHash(), 0
-                try:
-                    for chunk in response.iter_content(1024 * 1024):
-                        temporary.write(chunk)
-                        digest.update(chunk)
-                        size += len(chunk)
-                except requests.RequestException:
-                    raise DropboxDiskError("Скачивание из Dropbox прервано.", True) from None
-                finally:
-                    response.close()
-                if size != meta.size or digest.hexdigest() != meta.content_hash:
-                    raise DropboxDiskError("Размер или контрольная сумма Dropbox не совпадает.", True)
-                temporary.seek(0)
-                if hasattr(destination, "write"):
-                    shutil.copyfileobj(temporary, destination)
-                    return meta
-                target = Path(destination)
-                staged = None
-                try:
-                    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as output:
-                        staged = Path(output.name)
-                        shutil.copyfileobj(temporary, output)
-                    os.replace(staged, target)
-                finally:
-                    if staged is not None:
-                        staged.unlink(missing_ok=True)
+            # Refresh once on the owner, then copy its token/expiry. Clones share
+            # the SDK connection pool, but downloads must not hold this lock.
+            self._call("check_and_refresh_access_token")
+            client = self._login().clone()
+        meta, response = self._call_client(client, "files_download", path)
+        # Validate before replacing a local file or writing into a caller's stream.
+        # Do not close the clone: its session is owned by this disk's main client.
+        with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024) as temporary:
+            digest, size = _ContentHash(), 0
+            try:
+                for chunk in response.iter_content(1024 * 1024):
+                    temporary.write(chunk)
+                    digest.update(chunk)
+                    size += len(chunk)
+            except requests.RequestException:
+                raise DropboxDiskError("Скачивание из Dropbox прервано.", True) from None
+            finally:
+                response.close()
+            if size != meta.size or digest.hexdigest() != meta.content_hash:
+                raise DropboxDiskError("Размер или контрольная сумма Dropbox не совпадает.", True)
+            temporary.seek(0)
+            if hasattr(destination, "write"):
+                shutil.copyfileobj(temporary, destination)
                 return meta
+            target = Path(destination)
+            staged = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as output:
+                    staged = Path(output.name)
+                    shutil.copyfileobj(temporary, output)
+                os.replace(staged, target)
+            finally:
+                if staged is not None:
+                    staged.unlink(missing_ok=True)
+            return meta
 
     def copy(self, source, destination, overwrite=False, **kwargs):
         if overwrite:

@@ -5,8 +5,10 @@ from datetime import datetime
 from .theme import get_theme_colors
 from .libs import Fr_Libs
 from .attachments import attachment_controls
+from .task_actions import TaskActionsMenu
 from Backend.extended import Backend2
 from Backend.core import local_today
+from Backend.timing import timed
 
 from threading import Thread
 import threading
@@ -74,9 +76,24 @@ class Utils:
         self.btn_new_task = ft.Button()
         self.cloud = cloud
 
+    def _task_menu_appearance(self):
+        """Повторяет оформление прежнего PopupMenuButton один раз на тему."""
+        key = (id(self.libs), self.theme)
+        if getattr(self, '_task_menu_appearance_key', None) != key:
+            probe = self.libs.prepare(ft.PopupMenuButton(icon_color=self.libs.FletIconColor))
+            self._task_menu_theme = ft.Theme(popup_menu_theme=ft.PopupMenuTheme(
+                color=probe.bgcolor, shape=probe.shape,
+                elevation=probe.elevation, shadow_color=probe.shadow_color,
+            ))
+            self._task_menu_icon_color = probe.icon_color
+            self._task_menu_appearance_key = key
+        return self._task_menu_theme, self._task_menu_icon_color
+
+    @timed
     def create_row_with_task(self, task, status, id_task, created_date=None, group_id='default',
                              deadline=None, priority='Неважно', info_type='created_date',
-                             *, show_checkbox=True, group_settings=None, attachments=None):
+                             *, show_checkbox=True, group_settings=None, attachments=None,
+                             on_copy=None, on_repeat=None):
         """Функция для создания и возвращения строки с делом, кнопками и т.д.
         created_date — дата создания дела (ДД-ММ-ГГГГ), отображается
         мелкой подписью под названием дела, если известна и если включена
@@ -84,7 +101,7 @@ class Utils:
         которой принадлежит дело (настройка хранится у самой группы в
         itog.json, а не в общем settings.txt). Для заметок show_checkbox=False
         создаёт такую же карточку без элемента отметки выполнения."""
-        taskW = ft.Text(
+        taskW = self.libs.linked_text(
             f"{task}",
             no_wrap=False,
             size=self.libs.text_size(self.font),
@@ -157,24 +174,15 @@ class Utils:
                 e, id_task, checkbox.value, row_with_task, taskW
             )
 
-        
-        if self.phone or self.libs.icon_pack in {"minimalistic", "minimalistic-blue"}:
-            # На телефоне и в минималистичных паках на ПК — компактные иконки Flet.
-            redact = self.libs.create_edit_button()
-
-            delete = self.libs.create_delete_button()
-        else:
-            # На ПК — прежние кнопки с картинками
-            redact = self.libs.build_button_with_image(
-                'redact', 'Редактировать дело'
-            )
-
-            delete = self.libs.build_button_with_image(
-                'basket1', 'Удалить дело'
-            )
+        menu_theme, menu_icon_color = self._task_menu_appearance()
+        menu = TaskActionsMenu(
+            self.libs, id_task, icon_color=menu_icon_color, show_checkbox=show_checkbox,
+            on_copy=on_copy, on_repeat=on_repeat,
+        )
+        redact, delete = menu.edit, menu.delete
 
         cont_with_actions = ft.Container(
-            content=ft.Row([redact, delete], spacing=0, tight=True),
+            content=ft.Row([menu], spacing=0, tight=True), theme=menu_theme,
         )
 
         """Возвращение"""
@@ -202,7 +210,7 @@ class Utils:
                 spacing=4 if self.phone else 10,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            bgcolor=self.BgColor,
+            bgcolor=self.ContBgColor,
             border=ft.Border.all(1, self.colors["SoftBorderColor"]),
             border_radius=14,
             padding=ft.Padding.symmetric(
@@ -212,6 +220,8 @@ class Utils:
             opacity=0.6 if status else 1,
             animate_opacity=160,
         )
+        row_with_task._nd_glass_card = True
+        row_with_task._nd_reorder_area = text_container
         return [row_with_task, delete, redact, taskW, checkbox]
 
     def _task_badge(self, icon, text, color):
@@ -225,6 +235,7 @@ class Utils:
             padding=ft.Padding.symmetric(horizontal=7, vertical=3),
         )
 
+    @timed
     def on_change_checkbox(self, e, id_task, status, row_with_task, taskW, *, update=True):
         """Функция для сохранения изменений в файле после изменения статуса,
         а также визуального отображения выполненного дела:
@@ -343,7 +354,7 @@ class Utils:
         status = ft.Text("Подключайте общие группы дел и заметок по названию и паролю.", color=self.TxtColor,
                          size=self.libs.text_size(13))
         memberships = ft.Column(spacing=8)
-        connect = self.libs.create_style_button("Подключить общую группу")
+        connect = self.libs.create_style_button("Подключить общую группу", primary=True)
         progress = ft.ProgressRing(width=20, height=20, visible=False)
 
         def refresh_memberships():
@@ -394,23 +405,7 @@ class Utils:
     def build_widgets_for_login(self, page, function_for_update, login_cmd):
         """Постройка виджетов для диалога
         с авторизацией/регистрацией"""
-        cont_title = ft.Container(
-            content=ft.Row(
-                [
-                    ft.Text(
-                        " Авторизация",
-                        weight=ft.FontWeight.W_900,
-                        size=self.libs.text_size(18),
-                        color=self.TxtColor,
-                    )
-                ]
-            ),
-            bgcolor=self.ContBgColor,
-            border=ft.Border.all(0.5, self.BorderColor),
-            border_radius=8,
-            padding=10,
-            width=self.width_dialogs,
-        )
+        cont_title = self.libs.create_style_header("Авторизация")
 
         lblT = ft.Text(
             " Вход/Регистрация", size=self.libs.text_size(18), weight=ft.FontWeight.W_900, color=self.TxtColor
@@ -473,7 +468,7 @@ class Utils:
         )
 
         btn_login = self.libs.create_style_button(
-            'Войти'
+            'Войти', primary=True
         )
 
         btn_for_register = self.libs.create_style_button(

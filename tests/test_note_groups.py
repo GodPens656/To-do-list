@@ -11,7 +11,7 @@ from Backend.core import Backend
 from Backend.attachments import AttachmentQuotaError, attachment_bytes, attachment_usage, make_attachment
 from Backend.storage import load_data, save_data, save_all_sections
 from Backend.webstorage import WebSessionStore
-from test_ui_state import make_front
+from test_ui_state import make_front, task_menu
 
 
 class NoteStorageTests(unittest.TestCase):
@@ -112,6 +112,52 @@ class NoteStorageTests(unittest.TestCase):
 
 
 class NoteGroupUITests(unittest.TestCase):
+    def test_note_menu_copies_full_text_from_the_selected_card(self):
+        for phone in (False, True):
+            with self.subTest(phone=phone):
+                front = make_front(phone=phone)
+                front.page.services = []
+                group = front.back.create_group('Записи', group_type='notes')
+                text = 'Подготовить документы и материалы для следующей рабочей встречи\n\nhttps://example.org | --- {N}'
+                first = front.back.save_note(group, text, attachments=[make_attachment('file.txt', b'data')])
+                second = front.back.save_note(group, 'Другая заметка')
+                front.current_group_id = group
+                front.render_daily_repeat_tasks()
+                cards = {c.key: c for c in front.tasks_cont.content.controls if isinstance(c.data, str)}
+                menu = task_menu(cards[first])
+                self.assertEqual(menu.tooltip, 'Действия с заметкой')
+                self.assertEqual([item.content for item in menu.items], ['Редактировать', 'Скопировать', 'Удалить'])
+                self.assertEqual([item.icon.icon for item in menu.items], [
+                    ft.Icons.EDIT_ROUNDED, ft.Icons.CONTENT_COPY_ROUNDED, ft.Icons.DELETE_ROUNDED,
+                ])
+                before = front.back._load()
+                with patch.object(ft.Clipboard, 'set', new_callable=AsyncMock) as set_text:
+                    asyncio.run(task_menu(cards[second]).items[1].on_click(None))
+                    set_text.assert_awaited_with('Другая заметка')
+                    asyncio.run(menu.items[1].on_click(None))
+                    set_text.assert_awaited_with(text)
+                self.assertEqual(len(front.page.services), 1)
+                self.assertEqual(front.back._load(), before)
+
+    def test_note_copy_reports_clipboard_error_and_reads_current_text(self):
+        front = make_front()
+        front.page.services = []
+        group = front.back.create_group('Записи', group_type='notes')
+        note_id = front.back.save_note(group, 'Исходный текст')
+        front.current_group_id = group
+        front.render_daily_repeat_tasks()
+        card = next(c for c in front.tasks_cont.content.controls if c.key == note_id)
+        copy = task_menu(card).items[1].on_click
+        front.back.save_note(group, 'Изменённый текст\nс переносом', note_id)
+        with patch.object(ft.Clipboard, 'set', new_callable=AsyncMock) as set_text:
+            asyncio.run(copy(None))
+        set_text.assert_awaited_once_with('Изменённый текст\nс переносом')
+        before = front.back._load()
+        with patch.object(ft.Clipboard, 'set', new_callable=AsyncMock, side_effect=RuntimeError('Unavailable')):
+            asyncio.run(copy(None))
+        self.assertEqual(front.page.show_dialog.call_args.args[0].title.value, 'Копирование заметки')
+        self.assertEqual(front.back._load(), before)
+
     def test_attachment_create_cancel_edit_remove_and_quota_error_on_both_layouts(self):
         for phone in (False, True):
             with self.subTest(phone=phone):
@@ -179,7 +225,7 @@ class NoteGroupUITests(unittest.TestCase):
                     front.close_page.assert_not_called()
                     self.assertEqual(len(front.back.read_notes(group_id)), 1)
                     self.assertEqual(len(files.values()), 1)
-                    self.assertEqual(front.page.show_dialog.call_args.args[0].title.value, ' Лимит вложений')
+                    self.assertEqual(front.page.show_dialog.call_args.args[0].title.value, 'Лимит вложений')
 
     def test_create_group_form_selects_type(self):
         front = make_front()
@@ -198,6 +244,7 @@ class NoteGroupUITests(unittest.TestCase):
         for phone in (False, True):
             with self.subTest(phone=phone):
                 front = make_front(phone=phone)
+                front.page.services = []
                 front._update_control = Mock()
                 front.back.saveB('Обычное дело')
                 group_id = front.back.create_group('Идеи', group_type='notes')
@@ -206,7 +253,7 @@ class NoteGroupUITests(unittest.TestCase):
                 front.render_daily_repeat_tasks()
                 cards = lambda: [c for c in front.tasks_cont.content.controls if isinstance(c.data, str)]
                 def actions(card):
-                    return card.content.controls[1 if phone else 0].content.controls
+                    return task_menu(card).items
                 self.assertFalse(front.filter_btn.visible)
                 self.assertFalse(front.task_progress.visible)
                 self.assertEqual(front.task_summary.value, 'Заметок: 1')
@@ -224,7 +271,7 @@ class NoteGroupUITests(unittest.TestCase):
                 front.libs.entry_task.value = 'Новая заметка'
                 new_form.content.controls[-1].controls[0].on_click(None)
                 self.assertEqual(len(front.back.read_notes(group_id)), 2)
-                actions(cards()[1])[1].on_click(None)
+                actions(cards()[1])[-1].on_click(None)
                 actions(cards()[0])[0].on_click(None)
                 _, form, _, _ = front.open_page.call_args.args
                 entry = front.libs.entry_task
@@ -238,7 +285,10 @@ class NoteGroupUITests(unittest.TestCase):
                 entry.value = 'Изменено\n\nс переносом'
                 save.on_click(None)
                 self.assertEqual(cards()[0].data, entry.value)
-                actions(cards()[0])[1].on_click(None)
+                with patch.object(ft.Clipboard, 'set', new_callable=AsyncMock) as set_text:
+                    asyncio.run(actions(cards()[0])[1].on_click(None))
+                set_text.assert_awaited_once_with('Изменено\n\nс переносом')
+                actions(cards()[0])[-1].on_click(None)
                 self.assertEqual(front.back.read_notes(group_id), [])
                 self.assertEqual(front.empty_title.value, ' Здесь пока нет заметок')
                 front.current_group_id = 'default'

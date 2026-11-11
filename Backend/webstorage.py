@@ -1,10 +1,19 @@
 """Персональное хранилище данных веб-версии в браузере пользователя."""
 
+import asyncio
 import inspect
 import json
+import logging
 import threading
 
+from flet.controls.exceptions import FletException
+
 from .storage import empty_data
+
+
+logger = logging.getLogger(__name__)
+STORAGE_ERRORS = (AttributeError, TypeError, ValueError, RuntimeError, OSError,
+                  TimeoutError, FletException)
 
 
 class WebSessionStore:
@@ -28,57 +37,84 @@ class WebSessionStore:
         # у конкретного пользователя браузера, а не в файлах веб-сервера.
         self._meta = {}
         self._lock = threading.RLock()
+        self._persist_locks = {
+            key: asyncio.Lock()
+            for key in (self.SETTINGS_KEY, self.META_KEY, self.DATA_KEY)
+        }
+        self._preferences = None
         self._section_revisions = {key: 0 for key in self._data}
+
+    def _get_preferences(self):
+        # В Flet 0.82 page.shared_preferences создаёт новый Service при каждом
+        # обращении. Держим одну ссылку на всё время жизни веб-сессии, чтобы
+        # Flet не удалял сервис между чтением и фоновыми записями.
+        if self._preferences is None:
+            self._preferences = getattr(self.page, "shared_preferences", None)
+        return self._preferences
 
     async def _call(self, method, *args):
         result = method(*args)
         return await result if inspect.isawaitable(result) else result
 
     async def load(self):
-        preferences = getattr(self.page, "shared_preferences", None)
+        preferences = self._get_preferences()
         if preferences is None:
             return
-        try:
-            raw_data = await self._call(preferences.get, self.DATA_KEY)
-            raw_settings = await self._call(preferences.get, self.SETTINGS_KEY)
-            raw_meta = await self._call(preferences.get, self.META_KEY)
-            if raw_data:
-                candidate = json.loads(raw_data)
-                if isinstance(candidate, dict):
+        # Ошибка одного ключа не должна сбрасывать остальные настройки
+        # браузера, включая сохранённую авторизацию.
+        for key in (self.SETTINGS_KEY, self.META_KEY, self.DATA_KEY):
+            try:
+                raw = await self._call(preferences.get, key)
+                if not raw:
+                    continue
+                candidate = json.loads(raw)
+                if not isinstance(candidate, dict):
+                    continue
+                if key == self.DATA_KEY:
                     data = empty_data()
-                    for key in data:
-                        if isinstance(candidate.get(key), list):
-                            data[key] = candidate[key]
+                    for section in data:
+                        if isinstance(candidate.get(section), list):
+                            data[section] = candidate[section]
                     self._data = data
-            if raw_settings:
-                candidate = json.loads(raw_settings)
-                if isinstance(candidate, dict):
-                    self._settings = {str(key): str(value) for key, value in candidate.items()}
-            if raw_meta:
-                candidate = json.loads(raw_meta)
-                if isinstance(candidate, dict):
-                    self._meta = {str(key): str(value) for key, value in candidate.items()}
-        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-            # В старых версиях Flet SharedPreferences может отсутствовать.
-            # В этом случае приложение остаётся рабочим в пределах вкладки.
-            pass
+                else:
+                    values = {str(k): str(v) for k, v in candidate.items()}
+                    if key == self.SETTINGS_KEY:
+                        self._settings = values
+                    else:
+                        self._meta = values
+            except STORAGE_ERRORS as error:
+                logger.warning("Cannot load browser storage key %s (%s)",
+                               key, type(error).__name__)
 
-    def _persist(self):
+    def _persist(self, *keys):
         try:
-            self.page.run_task(self._persist_async)
+            self.page.run_task(self._persist_async, keys or None)
         except (AttributeError, RuntimeError):
             pass
 
-    async def _persist_async(self):
-        preferences = getattr(self.page, "shared_preferences", None)
+    async def _persist_async(self, keys=None):
+        preferences = self._get_preferences()
         if preferences is None:
             return
-        try:
-            await self._call(preferences.set, self.DATA_KEY, json.dumps(self._data, ensure_ascii=False))
-            await self._call(preferences.set, self.SETTINGS_KEY, json.dumps(self._settings, ensure_ascii=False))
-            await self._call(preferences.set, self.META_KEY, json.dumps(self._meta, ensure_ascii=False))
-        except (AttributeError, TypeError, RuntimeError):
-            pass
+        # Для каждого ключа своя очередь: старое значение не может затереть
+        # новое, а медленная запись дел не задерживает сохранение настроек.
+        for key in (keys if keys is not None else (
+                self.SETTINGS_KEY, self.META_KEY, self.DATA_KEY)):
+            async with self._persist_locks[key]:
+                with self._lock:
+                    values = {
+                        self.SETTINGS_KEY: self._settings,
+                        self.META_KEY: self._meta,
+                        self.DATA_KEY: self._data,
+                    }
+                    value = json.dumps(values[key], ensure_ascii=False)
+                try:
+                    result = await self._call(preferences.set, key, value)
+                    if result is False:
+                        logger.warning("Cannot save browser storage key %s", key)
+                except STORAGE_ERRORS as error:
+                    logger.warning("Cannot save browser storage key %s (%s)",
+                                   key, type(error).__name__)
 
     def data_lock(self):
         """Защищает проверку и замену данных при синхронизации."""
@@ -103,7 +139,7 @@ class WebSessionStore:
                     changed = True
             self._data = clean
         if changed:
-            self._persist()
+            self._persist(self.DATA_KEY)
 
     def replace_from_cloud(self, data):
         """Атомарно заменяет активные дела скачанными из аккаунта.
@@ -121,7 +157,7 @@ class WebSessionStore:
             self._data = clean
             for key in self._section_revisions:
                 self._section_revisions[key] += 1
-        self._persist()
+        self._persist(self.DATA_KEY)
 
     def section_snapshot(self, key):
         with self._lock:
@@ -135,7 +171,7 @@ class WebSessionStore:
     def backup_guest_data(self):
         with self._lock:
             self._meta["guest_data"] = json.dumps(self._data, ensure_ascii=False)
-        self._persist()
+        self._persist(self.META_KEY)
 
     def restore_guest_data(self):
         raw = self.read_meta_text("guest_data")
@@ -152,7 +188,7 @@ class WebSessionStore:
     def write_settings_text(self, settings):
         with self._lock:
             self._settings = dict(settings) if isinstance(settings, dict) else {}
-        self._persist()
+        self._persist(self.SETTINGS_KEY)
 
     def read_meta_text(self, key):
         with self._lock:
@@ -161,4 +197,4 @@ class WebSessionStore:
     def write_meta_text(self, key, value):
         with self._lock:
             self._meta[str(key)] = str(value)
-        self._persist()
+        self._persist(self.META_KEY)

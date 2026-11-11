@@ -141,11 +141,13 @@ class Utils2:
             ft.Icons.CHECKLIST_ROUNDED,
             'Управление делами',
             [management_widgets],
+            framed=True,
         )
         btn_general = self.libs.create_style_expansion_category(
             ft.Icons.TUNE_ROUNDED,
             'Общие настройки',
             [general_widgets],
+            framed=True,
         )
         btn_security = self.libs.create_style_category_button(
             ft.Icons.LOCK_ROUNDED, 'Безопасность',
@@ -180,7 +182,7 @@ class Utils2:
                         f"Версия: {self.back.version}\n\n ", size=self.libs.text_size(10), color=self.TxtColor
                     ),
                 ],
-
+                framed=True,
         )
 
         # Build separate categories only when opened. Besides avoiding unused
@@ -206,13 +208,24 @@ class Utils2:
 
         return self.settings_cont, btn_nazad, primechanya_btn, dialogs
 
+    def _update_controls(self, *controls):
+        """Отправляет один патч изменённых поддеревьев без обхода всей страницы."""
+        for control in controls:
+            self.libs.prepare(control)
+        try:
+            self.back.page.update(*controls)
+        except RuntimeError:
+            # Во время первоначальной сборки поддерево ещё может быть не смонтировано.
+            self.back.page.update()
+        ft.context.disable_auto_update()
+
     def build_dialog_security(self, page):
         header = self.libs.create_style_header('Безопасность')
         back = self.libs.create_style_button('Назад')
         encryption, load_encryption = self.build_widgets_for_account_encryption(page)
         content = self.libs.create_style_cont([
             self.build_widgets_for_security(page), ft.Divider(), encryption, back,
-        ])
+        ], framed=True)
         return header, content, back, load_encryption
 
     def build_widgets_for_account_encryption(self, page):
@@ -241,7 +254,8 @@ class Utils2:
                 status.value = ""
             except Exception:
                 status.value = "Не удалось загрузить настройку. Откройте раздел ещё раз."
-            page.update()
+            # Настройка шифрования меняет только переключатель и его подпись.
+            self._update_controls(switch, status)
 
         async def apply(e):
             nonlocal enabled, busy
@@ -251,7 +265,8 @@ class Utils2:
             busy = True
             switch.disabled = True
             status.value = "Изменение шифрования…"
-            page.update()
+            # Состояние ожидания ограничено этими двумя контролами.
+            self._update_controls(switch, status)
             try:
                 await asyncio.to_thread(self.cloud.set_account_encryption, account, requested)
                 enabled = requested
@@ -264,7 +279,8 @@ class Utils2:
                 busy = False
                 switch.value = enabled
                 switch.disabled = False
-                page.update()
+                # Результат операции не меняет другие разделы настроек.
+                self._update_controls(switch, status)
 
         switch.on_change = apply
         return ft.Column([
@@ -307,7 +323,8 @@ class Utils2:
                 field.value = ""
             status.value = ""
             refresh()
-            page.update()
+            # Видимость полей и кнопки меняется только в разделе пароля.
+            self._update_controls(content)
 
         async def apply(e):
             nonlocal enabled
@@ -315,12 +332,14 @@ class Utils2:
                 return
             if switch.value and password.value != confirmation.value:
                 status.value = "Пароли не совпадают."
-                page.update()
+                # Несовпадение паролей меняет только сообщение об ошибке.
+                self._update_controls(status)
                 return
             save.disabled = switch.disabled = True
             for field in (current, password, confirmation):
                 field.disabled = True
-            page.update()
+            # Блокировка ввода ограничена разделом пароля.
+            self._update_controls(content)
             try:
                 if switch.value:
                     await asyncio.to_thread(
@@ -345,12 +364,13 @@ class Utils2:
                 save.disabled = switch.disabled = False
                 for field in (current, password, confirmation):
                     field.disabled = False
-                page.update()
+                # После сохранения обновляются поля, переключатель и статус раздела.
+                self._update_controls(content)
 
         switch.on_change = toggle
         save.on_click = confirmation.on_submit = current.on_submit = apply
         refresh()
-        return ft.Column([
+        content = ft.Column([
             switch,
             ft.Text(
                 "Отдельный пароль для входа в приложение на этом устройстве.",
@@ -358,6 +378,7 @@ class Utils2:
             ),
             current, password, confirmation, save, status,
         ], spacing=12)
+        return content
 
     def _build_special_task_list(self, repeating, cmd_create, cmd_info, page):
         """Общие элементы списка для встроенного и отдельного диалога."""
@@ -408,7 +429,7 @@ class Utils2:
         tasks.content.height = None
         tasks.expand = True
         back = self.libs.create_style_button('Назад')
-        content = self.libs.create_style_cont([toolbar, tasks, back])
+        content = self.libs.create_style_cont([toolbar, tasks, back], framed=True)
         content.content.scroll = None
         return (
             self.libs.create_style_header(title),
@@ -438,13 +459,13 @@ class Utils2:
                     repeating, cmd_create, cmd_info, page,
                 )
                 section = self.libs.create_style_expansion_category(
-                    icon, title, [tasks], padding=1,
+                    icon, title, [tasks], padding=1, framed=True,
                 )
                 blocks.append(ft.Column([toolbar, section], spacing=10))
         back = self.libs.create_style_button('Назад')
         return (
             self.libs.create_style_header('Особые дела'),
-            self.libs.create_style_cont([*blocks, back]),
+            self.libs.create_style_cont([*blocks, back], framed=True),
             back,
         )
 
@@ -490,7 +511,8 @@ class Utils2:
                 return
             btn_backup.disabled = True
             backup_status.value = "Отправка бэкапа…"
-            self.back.page.update()
+            # Отправка бэкапа меняет только свою кнопку и статус.
+            self._update_controls(btn_backup, backup_status)
             try:
                 account = self.cloud.read_user_data_text().split("~~")[0].strip()
                 if not account:
@@ -508,7 +530,8 @@ class Utils2:
                 backup_status.value = "Не удалось отправить бэкап. Проверьте интернет и попробуйте ещё раз."
             finally:
                 btn_backup.disabled = False
-                self.back.page.update()
+                # Завершение выгрузки возвращает доступность той же кнопки.
+                self._update_controls(btn_backup, backup_status)
 
         btn_backup.on_click = send_backup
         return ft.Container(
@@ -528,7 +551,8 @@ class Utils2:
 
         def busy(value):
             import_button.disabled = export_button.disabled = value
-            self.back.page.update()
+            # Импорт и экспорт меняют только свои кнопки и сообщение.
+            self._update_controls(import_button, export_button, status)
 
         async def export_data(_):
             if export_button.disabled:
@@ -593,7 +617,7 @@ class Utils2:
                         decision.set_result(False)
 
                 dialog = ft.AlertDialog(
-                    modal=True, title=ft.Text("Заменить данные?"),
+                    modal=True, title=self.libs.create_dialog_title("Заменить данные?"),
                     content=ft.Text("Все текущие группы, дела, заметки, вложения и достижения "
                                     "будут заменены данными из архива. Действие нельзя отменить. "
                                     "При необходимости сначала экспортируйте текущие данные."),
@@ -638,7 +662,7 @@ class Utils2:
             command_for_battery_settings,
         )
         back_btn = self.libs.create_style_button('Назад')
-        content = self.libs.create_style_cont([widgets, back_btn])
+        content = self.libs.create_style_cont([widgets, back_btn], framed=True)
         return header, content, back_btn
 
     def build_dialog_customization(self):
@@ -646,7 +670,7 @@ class Utils2:
         header = self.libs.create_style_header('Кастомизация')
         widgets = self.build_widgets_for_customization()
         back_btn = self.libs.create_style_button('Назад')
-        content = self.libs.create_style_cont([widgets, back_btn])
+        content = self.libs.create_style_cont([widgets, back_btn], framed=True)
         return header, content, back_btn
 
     WEEKDAYS_RU_DAT = {
@@ -754,7 +778,7 @@ class Utils2:
                 [
                     ft.Column(
                         [
-                            ft.Text(
+                            self.libs.linked_text(
                                 display_task_name,
                                 no_wrap=False,
                                 size=self.libs.text_size(16),
@@ -794,7 +818,8 @@ class Utils2:
             extra.opacity = 1 if disabled else 0.6
             toggle.content = "Включить" if disabled else "Отключить"
             toggle.icon = ft.Icons.PLAY_ARROW_ROUNDED if disabled else ft.Icons.PAUSE_ROUNDED
-            self.libs.page.update()
+            # Подпись и пункт меню принадлежат одной строке повторяющегося дела.
+            self._update_controls(row)
 
         toggle.on_click = toggle_disabled
 
@@ -842,7 +867,7 @@ class Utils2:
             [
                 ft.Column(
                     [
-                        ft.Text(
+                        self.libs.linked_text(
                             display_task_name,
                             no_wrap=False,
                             size=self.libs.text_size(16),
@@ -1408,11 +1433,7 @@ class Utils2:
             dialog = ft.AlertDialog(
                 modal=True,
                 bgcolor=self.ContBgColor,
-                title=ft.Text(
-                    " Свой акцентный цвет",
-                    color=self.TxtColor,
-                    weight=ft.FontWeight.W_700,
-                ),
+                title=self.libs.create_dialog_title("Свой акцентный цвет"),
                 content=color_picker,
                 actions=[
                     ft.Button("Отмена", on_click=close_palette),
@@ -1439,6 +1460,7 @@ class Utils2:
                 )
             ],
             padding=12,
+            framed=True,
         )
 
         return ft.Container(

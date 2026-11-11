@@ -22,6 +22,7 @@ class GroupDefaultFilterTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.back = Backend.__new__(Backend)
         self.back.web = False
+        self.back.page = None
         self.back.data_dir = Path(self.directory.name)
         save_all_sections(self.back.data_dir, {
             "groups": [
@@ -154,6 +155,45 @@ class GroupDefaultFilterTests(unittest.TestCase):
         self.back.reset_group_default_filter("default")
         self.front._load_default_task_filter()
         self.assert_filter("priority_desc", "incomplete_first")
+
+    def test_legacy_manual_order_does_not_override_global_filter(self):
+        data = self.back._load()
+        data["groups"][0]["all_tasks_manual_order"] = True
+        self.back._save(data)
+        self.front.current_group_id = ALL_TASKS_GROUP_ID
+        self.front._load_default_task_filter()
+        self.assert_filter("priority_desc", "incomplete_first")
+
+    def test_reordering_keeps_saved_filters_after_disk_reload(self):
+        self.back2.web = False
+        self.back2.settings = self.back.data_dir / "settings.txt"
+        self.back2.redact_setting("default_task_sort", "priority_desc")
+        self.back2.redact_setting("default_task_status_sort", "incomplete_first")
+        self.back.set_group_default_filter("work", "deadline_asc", "complete_first")
+        self.back.saveB("Второе дело", "work")
+        groups = self.back._load()["groups"]
+        for group_id, expected in (
+            ("work", ("deadline_asc", "complete_first")),
+            (ALL_TASKS_GROUP_ID, ("priority_desc", "incomplete_first")),
+        ):
+            with self.subTest(group=group_id):
+                ordered_ids = [task["id"] for task in reversed(self.back.read_tasks())]
+                self.assertTrue(self.back.reorder_tasks(
+                    ordered_ids, None if group_id == ALL_TASKS_GROUP_ID else group_id,
+                ))
+                reopened = Backend.__new__(Backend)
+                reopened.web = False
+                reopened.data_dir = self.back.data_dir
+                settings = Backend2.__new__(Backend2)
+                settings.web = False
+                settings.settings = self.back2.settings
+                settings.set_default_settings()
+                self.front.back, self.front.back2 = reopened, settings
+                self.front.current_group_id = group_id
+                self.front._load_default_task_filter()
+                self.assert_filter(*expected)
+                self.assertEqual(reopened._load()["groups"], groups)
+                self.assertEqual([task["id"] for task in reopened.read_tasks()], ordered_ids)
 
 
 if __name__ == "__main__":

@@ -3,8 +3,10 @@ from .theme import get_theme_colors
 from .glass import (
     GlassHost, apply_glass, glass_background, glass_surface, is_glass, is_toolbar_glass,
 )
-from .controls import ActionButton, ActionIconButton, SurfaceHost
+from .controls import ActionButton, ActionIconButton
+from .dayplanner import PlannerHost, FIELD_RADIUS, PILL_RADIUS
 from .typography import scaled_text_size
+from .links import linked_text
 from .wallpaper import WallpaperManager
 from Backend.core import Backend
 from Backend.validation import MAX_TEXT_LENGTH
@@ -12,7 +14,7 @@ from Backend.validation import MAX_TEXT_LENGTH
 
 class Fr_Libs:
     SVG_ICON_PACKS = {"minimalistic", "minimalistic-blue"}
-    MOBILE_TOOLBAR_ICON_SIZE = 26
+    MOBILE_TOOLBAR_ICON_SIZE = 32
     MOBILE_TOOLBAR_BUTTON_HEIGHT = 62
 
     FLET_ICON_PACK = {
@@ -111,10 +113,16 @@ class Fr_Libs:
     def text_size(self, size):
         return scaled_text_size(self.page, size)
 
+    def linked_text(self, value, **kwargs):
+        return linked_text(
+            value, page=self.page, web=self.web,
+            dark=self.icon_theme == "dark", **kwargs,
+        )
+
     def host(self, **kwargs):
         if self.glass or self.glass_toolbar:
             return GlassHost(self.theme, self.colors, mobile=self.glass_mobile, **kwargs)
-        return SurfaceHost(**kwargs)
+        return PlannerHost(self.theme, self.colors, **kwargs)
 
     def prepare(self, control):
         return apply_glass(control, self.theme, self.colors, mobile=self.glass_mobile)
@@ -129,7 +137,7 @@ class Fr_Libs:
             wallpaper.wrap_view(view)
         return view
 
-    def open_dialog(self, title, content, page):
+    def open_dialog(self, title, content, page, *, linkify=False):
         """Открывает информационное сообщение как AlertDialog поверх текущей страницы
         (раньше это была отдельная страница/route, из-за чего лишний раз ломался
         стек навигации)."""
@@ -152,13 +160,8 @@ class Fr_Libs:
             modal=True,
             bgcolor=self.ContBgColor,
             shape=ft.RoundedRectangleBorder(radius=8),
-            title=ft.Text(
-                f" {title}",
-                weight=ft.FontWeight.W_900,
-                size=self.text_size(18),
-                color=self.TxtColor,
-            ),
-            content=ft.Text(
+            title=self.create_dialog_title(title),
+            content=(self.linked_text if linkify else ft.Text)(
                 f"{content}",
                 weight=ft.FontWeight.W_500,
                 size=self.text_size(16),
@@ -193,8 +196,8 @@ class Fr_Libs:
     ]
 
     @staticmethod
-    def update_text_counter(entry):
-        entry.helper = f"{len(entry.value or '')}/{MAX_TEXT_LENGTH} символов"
+    def update_text_counter(entry, max_length=MAX_TEXT_LENGTH):
+        entry.helper = f"{len(entry.value or '')}/{max_length} символов"
 
     def widgets_for_ask_task(
         self,
@@ -203,6 +206,8 @@ class Fr_Libs:
         title,
         with_interval=False,
         warning_text="Не создавайте одинаковые дела",
+        *,
+        max_length=MAX_TEXT_LENGTH,
     ):
         """Постройка и возвращение виджетов для диалога с созданием нового дела.
         Если with_interval=True, добавляется выбор периодичности повторения
@@ -218,14 +223,14 @@ class Fr_Libs:
             "",
             label="Название дела",
             hint_text="Обязательно для заполнения",
-            helper=f"0/{MAX_TEXT_LENGTH} символов",
+            helper=f"0/{max_length} символов",
             multiline=True,
             shift_enter=not self.phone,
             width=self.width_dialogs * 0.95,
         )
 
         def on_text_change(event):
-            self.update_text_counter(event.control)
+            self.update_text_counter(event.control, max_length)
             event.control.update()
 
         self.entry_task.on_change = on_text_change
@@ -303,6 +308,8 @@ class Fr_Libs:
             align=ft.Alignment.BOTTOM_RIGHT,
         )
 
+        self.btn_create_task._nd_planner_primary = True
+
         row_for_buttons = ft.Row([self.btn_create_task, self.cancel])
 
         header_C = self.create_style_header(title)
@@ -347,10 +354,9 @@ class Fr_Libs:
                 ],
                 scroll=ft.ScrollMode.AUTO,
             ),
-            # height = self.height_dialogs,
             bgcolor=self.ContBgColor,
-            border=ft.Border.all(0.5, self.BorderColor),
-            border_radius=10,
+            border=ft.Border.all(1, self.colors["SoftBorderColor"]),
+            border_radius=16,
             padding=self.padding,
             width=self.width_dialogs,
             expand=True,
@@ -374,9 +380,8 @@ class Fr_Libs:
 
     def build_button_with_image(self, img, tooltip, size=42, *, compact=True):
         """Функция для создания кнопки с заданной картинкой и tooltip"""
-        target_size = max(44, size) if compact else None
-        if compact:
-            size = min(size, 24)
+        target_size = max(40 if compact else 44, size)
+        size = min(size, 24 if compact else 36)
         if self.icon_pack == "flet" or img == "undo":
             content = ft.Icon(
                 self.FLET_ICON_PACK.get(img, ft.Icons.IMAGE_ROUNDED),
@@ -420,28 +425,34 @@ class Fr_Libs:
             icon_path = f"/{relative_path}" if self.web else relative_path
             content = ft.Image(src=icon_path, width=size, height=size)
 
-        return ActionButton(
+        button = ActionButton(
             # assets_dir уже указывает на папку assets, поэтому путь
             # задаётся относительно неё.
             content=content,
             style=ft.ButtonStyle(
-                shape=ft.RoundedRectangleBorder(radius=12),
+                shape=ft.RoundedRectangleBorder(radius=PILL_RADIUS),
                 padding=10,
                 elevation=0,
                 overlay_color=self.colors["HoverColor"],
             ) if compact else ft.ButtonStyle(
-                shape=ft.RoundedRectangleBorder(radius=10),
-                padding=2,
+                shape=ft.RoundedRectangleBorder(radius=FIELD_RADIUS),
+                padding=4,
+                elevation=0,
             ),
             width=target_size,
             height=target_size,
             bgcolor=self.BtnColor,
             tooltip=ft.Tooltip(tooltip, decoration=None),
         )
+        if not compact:
+            button._nd_planner_corner_radius = FIELD_RADIUS
+        return button
 
     def style_glass_toolbar(self, container, row, *, labels=None):
         """Одна стеклянная капсула с равными по ширине действиями."""
         container.content.tight = True
+        if self.glass_mobile:
+            container.content.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
         row.scroll = None
         row.wrap = False
         row.spacing = 2
@@ -449,6 +460,10 @@ class Fr_Libs:
         for button, label in zip(row.controls, labels):
             button._nd_glass_toolbar_action = True
             icon = button.content
+            if isinstance(icon, str):
+                icon = ft.Icon(button.icon or ft.Icons.ADD_ROUNDED,
+                               color=self.FletIconColor, size=self.MOBILE_TOOLBAR_ICON_SIZE)
+                button.icon = None
             if isinstance(icon, ft.Icon):
                 icon.size = self.MOBILE_TOOLBAR_ICON_SIZE
             elif isinstance(icon, ft.Image):
@@ -466,8 +481,8 @@ class Fr_Libs:
             button.bgcolor = ft.Colors.TRANSPARENT
             button.elevation = 0
             button.style = ft.ButtonStyle(
-                shape=ft.RoundedRectangleBorder(radius=32),
-                padding=ft.Padding.symmetric(horizontal=2, vertical=6),
+                shape=ft.RoundedRectangleBorder(radius=32 if self.glass or self.glass_toolbar else 14),
+                padding=ft.Padding.symmetric(horizontal=2, vertical=4),
                 elevation=0,
                 shadow_color=ft.Colors.TRANSPARENT,
                 side=ft.BorderSide(0, ft.Colors.TRANSPARENT),
@@ -478,10 +493,18 @@ class Fr_Libs:
                 },
                 visual_density=ft.VisualDensity.COMPACT,
             )
-        self.style_glass_toolbar_surface(container)
+        if self.glass or self.glass_toolbar:
+            self.style_glass_toolbar_surface(container)
+        else:
+            container.padding = 6
+            container.border_radius = 26
 
     def configure_action_panel(self, container, actions, position, *, progress=None):
         """Keep every action reachable, including in a short vertical sidebar."""
+        if not self.phone and (self.glass or self.glass_toolbar):
+            # Reuse the task cards' lightweight material without a backdrop filter.
+            container._nd_glass_toolbar = True
+            glass_surface(container, self.theme)
         if position in {"left", "right"}:
             button_width = 64
             for control in actions.controls:
@@ -513,10 +536,26 @@ class Fr_Libs:
             actions.scroll = ft.ScrollMode.AUTO if self.phone and not glass_actions else None
             container.content = (ft.Column([actions, progress], spacing=0)
                                  if progress is not None else actions)
+            if self.glass_mobile and progress is not None:
+                container.content.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
         return container
 
-    def dock_action_panel(self, body, panel, position):
-        """Give the body bounded space beside a fixed, independently scrolling panel."""
+    def dock_action_panel(self, body, panel, position, *, scrollable=None):
+        """Dock actions beside the body, or float the mobile footer over its list."""
+        if self.phone and position == "bottom" and not self.glass_mobile and scrollable is not None:
+            # Keep the space around the capsule transparent: cards scroll all
+            # the way to the screen's bottom instead of ending above the menu.
+            # The inset belongs to the list so its last item can clear the menu,
+            # including the upload indicator when it appears.
+            scrollable.padding = ft.Padding.only(bottom=self.MOBILE_TOOLBAR_BUTTON_HEIGHT + 42)
+            body.expand = None
+            return self.host(
+                content=ft.Stack([
+                    body,
+                    ft.Container(content=panel, left=0, right=0, bottom=0),
+                ], fit=ft.StackFit.EXPAND),
+                expand=True,
+            )
         controls = [panel, body] if position in {"top", "left"} else [body, panel]
         if position in {"left", "right"}:
             return ft.Row(controls, expand=True, spacing=10,
@@ -529,7 +568,7 @@ class Fr_Libs:
         container.padding = 6
         container.margin = ft.Margin.symmetric(horizontal=4)
         container._nd_glass_toolbar = True
-        glass_surface(container, self.theme, radius=40, mobile=self.glass_mobile, backdrop=True)
+        glass_surface(container, self.theme, radius=40, mobile=self.glass_mobile)
 
     def build_glass_body(self, list_container, add_button, toolbar, *, scrollable=None,
                          toolbar_actions=None):
@@ -547,8 +586,9 @@ class Fr_Libs:
         # This space belongs to the scrolling content, so cards pass behind the
         # menu and the last item can still be scrolled clear of both buttons.
         scrollable = scrollable if scrollable is not None else list_container.content
-        scrollable.padding = ft.Padding.only(bottom=200)
-        floating_add = ft.Container(content=add_button, right=18, bottom=108)
+        add_bottom = self.MOBILE_TOOLBAR_BUTTON_HEIGHT + 46
+        scrollable.padding = ft.Padding.only(bottom=add_bottom + self.MOBILE_TOOLBAR_BUTTON_HEIGHT + 30)
+        floating_add = ft.Container(content=add_button, right=18, bottom=add_bottom)
         if toolbar_actions is not None:
             self.style_glass_add_button(add_button, match_toolbar=True)
             # Use the toolbar's exact columns and horizontal insets so the
@@ -558,7 +598,7 @@ class Fr_Libs:
                     *[ft.Container(expand=True) for _ in toolbar_actions.controls[:-1]],
                     add_button,
                 ], spacing=toolbar_actions.spacing, height=add_button.height),
-                left=10, right=10, bottom=108,
+                left=10, right=10, bottom=add_bottom,
                 padding=ft.Padding.symmetric(horizontal=toolbar.padding + toolbar.border.left.width),
                 margin=toolbar.margin,
             )
@@ -617,14 +657,14 @@ class Fr_Libs:
         )
 
 
-    def create_style_button(self, text, icon=None):
+    def create_style_button(self, text, icon=None, *, primary=False):
         """Создает кнопку со стилем, стандартным для приложения"""
         btn = ActionButton(
             f"{text}",
             bgcolor=self.BtnColor,
             style=ft.ButtonStyle(
-                shape=ft.RoundedRectangleBorder(radius=12),
-                padding=ft.Padding.symmetric(horizontal=18, vertical=14),
+                shape=ft.RoundedRectangleBorder(radius=PILL_RADIUS),
+                padding=ft.Padding.symmetric(horizontal=18, vertical=10),
                 elevation=0,
                 overlay_color=self.colors["HoverColor"],
                 text_style=ft.TextStyle(size=self.text_size(14), weight=ft.FontWeight.W_500),
@@ -634,6 +674,7 @@ class Fr_Libs:
         if icon is not None:
             btn.icon = icon
             btn.icon_color = self.FletIconColor
+        btn._nd_planner_primary = primary
         return btn
 
     def create_edit_button(self):
@@ -662,89 +703,111 @@ class Fr_Libs:
                 ),
             )
     def create_style_cont(self, content: list,
-    height='auto', width='auto',):
-        """Создание стилизированного контейнера"""
+    height='auto', width='auto', *, framed=False):
+        """Группа виджетов с прокруткой и необязательной фоновой панелью."""
         if width == 'auto':
             width = self.width_dialogs
         else:
             width = int(width)
 
+        surface = dict(
+            bgcolor=self.ContBgColor,
+            border=ft.Border.all(1, self.colors["SoftBorderColor"]),
+            border_radius=16,
+        ) if framed else {}
+
         if height == 'auto':
             return self.host(
+                **surface,
                 content=ft.Column(content, scroll=ft.ScrollMode.AUTO, spacing=14),
-                bgcolor=self.ContBgColor,
-                border=ft.Border.all(1, self.colors["SoftBorderColor"]),
-                border_radius=16,
                 padding=self.padding,
                 width=width,
                 expand=True,
             )
         else:
             return self.host(
+                **surface,
                 content=ft.Column(content, scroll=ft.ScrollMode.AUTO, spacing=14),
-                bgcolor=self.ContBgColor,
-                border=ft.Border.all(1, self.colors["SoftBorderColor"]),
-                border_radius=16,
                 padding=self.padding,
                 width=width,
                 height=int(height),
             )
+    def _create_category_title(self, icon, text: str):
+        """Общий заголовок обычных и раскрываемых категорий настроек."""
+        badge = ft.Container(
+            content=ft.Icon(icon, color=self.colors["CategoryIconColor"], size=24),
+            bgcolor=self.colors["CategoryIconBgColor"],
+            border=ft.Border.all(1, ft.Colors.with_opacity(
+                0.35, self.colors["CategoryIconColor"],
+            )) if self.glass or self.glass_toolbar else None,
+            border_radius=12, width=40, height=40, alignment=ft.Alignment.CENTER,
+        )
+        if self.glass or self.glass_toolbar:
+            # The opaque icon badge supplies its own contrast and outline.
+            badge._nd_glass_material = True
+        return ft.Row(
+            [
+                badge,
+                ft.Text(
+                    f" {text}",
+                    size=self.text_size(16),
+                    weight=ft.FontWeight.W_600,
+                    color=self.TxtColor,
+                    expand=True,
+                ),
+            ],
+            spacing=10,
+        )
+
     def create_style_category_button(self, icon, text: str):
         """Кнопка-категория для главного окна настроек.
         Открывает отдельный диалог с настройками выбранной темы."""
-        return ActionButton(
-            content=ft.Row(
-                [
-                    ft.Icon(icon, color=self.FletIconColor, size=20),
-                    ft.Text(
-                        f" {text}",
-                        size=self.text_size(16),
-                        weight=ft.FontWeight.W_600,
-                        color=self.TxtColor,
-                        expand=True,
-                    ),
-                    ft.Icon(
-                        ft.Icons.CHEVRON_RIGHT_ROUNDED,
-                        color=self.FletIconColor,
-                        size=20,
-                    ),
-                ],
-                spacing=10,
+        title = self._create_category_title(icon, text)
+        title.controls.append(
+            ft.Icon(
+                ft.Icons.CHEVRON_RIGHT_ROUNDED,
+                color=self.FletIconColor,
+                size=20,
             ),
+        )
+        button = ActionButton(
+            content=title,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=12),
-                padding=20,
+                padding=ft.Padding.only(left=4, right=14, top=4, bottom=4),
+                visual_density=ft.VisualDensity.STANDARD,
                 elevation=0,
                 overlay_color=self.colors["HoverColor"],
             ),
             bgcolor=self.BtnColor,
             width=self.width_dialogs * 0.92,
         )
+        button._nd_planner_category = True
+        return button
 
-    def create_style_expansion_category(self, icon, text: str, controls, padding=25):
+    def create_style_expansion_category(self, icon, text: str, controls, padding=25, *, framed=False):
         """Раскрываемая категория настроек без перехода в другой View.
         Стиль заголовка приравнен к create_style_category_button
         (иконка/шрифт/ширина одинаковые), чтобы плитка выглядела
         так же, как кнопки, ведущие в диалоги, и иконка была
         видна как в свёрнутом, так и в раскрытом состоянии."""
+        # Full glass uses a surrounding surface. Let that host draw the frame
+        # so the tile's different corner radius cannot add a second outline.
+        shape = ft.RoundedRectangleBorder(
+            radius=12,
+            side=ft.BorderSide(1, self.colors["GlassEdgeColor"]
+                               if self.glass or self.glass_toolbar
+                               else self.colors["SoftBorderColor"]) if framed and not self.glass else None,
+        )
+        title = self._create_category_title(icon, text)
+        # Let ExpansionTile animate the label color with its background.
+        title.controls[1].color = None
         tile = ft.ExpansionTile(
-            title=ft.Row(
-                [
-                    ft.Icon(icon, color=self.FletIconColor, size=20),
-                    ft.Text(
-                        f" {text}",
-                        size=self.text_size(16),
-                        weight=ft.FontWeight.W_600,
-                        color=self.TxtColor,
-                        expand=True,
-                    ),
-                ],
-                spacing=10,
-            ),
+            title=title,
             controls=controls,
 
-            bgcolor=self.BgColor,
-            collapsed_bgcolor=self.BtnColor,
+            bgcolor=self.BgColor if framed else ft.Colors.TRANSPARENT,
+            collapsed_bgcolor=self.BtnColor if framed else ft.Colors.TRANSPARENT,
 
             text_color=self.TxtColor,
             collapsed_text_color=self.TxtColor,
@@ -752,26 +815,26 @@ class Fr_Libs:
             collapsed_icon_color=self.FletIconColor,
 
             controls_padding=padding,
-            tile_padding=ft.Padding.symmetric(horizontal=25, vertical=0),
-            min_tile_height=55,
+            tile_padding=ft.Padding.only(left=4, right=14),
+            min_tile_height=48,
 
             # Ширина приравнена к create_style_category_button
             width=self.width_dialogs * 0.92,
 
             # Скругление
-            shape=ft.RoundedRectangleBorder(
-                radius=10,
-            ),
-            collapsed_shape=ft.RoundedRectangleBorder(
-                radius=10,
-            ),
+            shape=shape,
+            collapsed_shape=shape,
         )
+        tile._nd_planner_category = framed
         if self.glass:
-            return self.host(
-                content=tile, width=tile.width, bgcolor=self.ContBgColor,
-                border=ft.Border.all(1, self.colors["GlassEdgeColor"]),
-                border_radius=14,
+            panel = self.host(
+                content=tile, width=tile.width,
+                bgcolor=self.ContBgColor if framed else None,
+                border=ft.Border.all(1, self.colors["GlassEdgeColor"]) if framed else None,
+                border_radius=14 if framed else None,
             )
+            panel._nd_glass_tint = self.colors["GlassButtonTint"] if framed else None
+            return panel
         return tile
 
     def create_style_section_title(self, icon, text: str, size=18, icon_color=None):
@@ -779,7 +842,7 @@ class Fr_Libs:
         if self.icon_pack == "minimalistic-blue":
             icon_color = self.FletIconColor
         elif icon_color is None:
-            icon_color = self.BtnColor
+            icon_color = self.colors["ProgressColor"]
         return ft.Row(
             [
                 ft.Icon(icon, color=icon_color, size=size + 2),
@@ -822,41 +885,38 @@ class Fr_Libs:
                 ],
                 spacing=10,
             ),
-            bgcolor=self.ContBgColor,
-            border=ft.Border.all(0.5, self.BorderColor),
-            border_radius=10,
             padding=8,
             opacity=0.5,
             visible = v,
         )
 
-    def create_style_header(self, title: str):
-        """Создание стилизированного заголовка"""
-        return ft.Container(
-            content=ft.Row(
-                [
-                    ft.Text(
-                        f" {title}",
-                        weight=ft.FontWeight.W_900,
-                        size=self.text_size(18),
-                        color=self.TxtColor,
-                        expand=True,
-                    )
-                ]
-            ),
-            bgcolor=self.ContBgColor,
-            border=ft.Border.all(0.5, self.BorderColor),
-            border_radius=8,
-            padding=self.padding,
-            width=self.width_dialogs,
-
+    def create_dialog_title(self, title: str):
+        return ft.Text(
+            title, weight=ft.FontWeight.W_700, size=self.text_size(24),
+            color=self.TxtColor,
         )
+
+    def create_style_header(self, title: str, *, on_back=None, width=None,
+                            back_tooltip="Назад"):
+        """Единый заголовок диалогов со стрелкой возврата, как у расписания."""
+        back = ActionIconButton(
+            icon=ft.Icons.ARROW_BACK_ROUNDED, icon_color=self.TxtColor,
+            tooltip=back_tooltip, on_click=on_back,
+        )
+        label = self.create_dialog_title(title)
+        label.expand = True
+        header = ft.Container(
+            content=ft.Row([back, label], spacing=8),
+            padding=ft.Padding.only(top=6 if self.phone else 0, bottom=6),
+            width=self.width_dialogs if width is None else width,
+        )
+        header._nd_dialog_back = back
+        return header
 
     def collection_widgets_fo_dialog(self, cont_title, cont_actions, border, width=None):
         """Виджеты для диалога с редактированием дела"""
         itog_cont = ft.Container(
             content=ft.Column([cont_title, cont_actions]),
-            bgcolor=self.BgColor,
             width=self.width_dialogs if width is None else width
         )
 
@@ -871,13 +931,13 @@ class Fr_Libs:
             expand=True,
         )
 
-        # В веб-версии экран должен начинаться от верхней границы.
-        # Раньше мобильный spacer (25 px) вместе со стандартным spacing
-        # колонки создавал заметный пустой участок сверху.
-        dialog_controls = [most_itog_cont] if self.web else [
+        # Верхний spacer нужен только нативному мобильному клиенту.
+        # На ПК даже его нулевая высота добавляла spacing перед заголовком.
+        mobile_spacing = self.phone and not self.web
+        dialog_controls = [
             self.spacer_for_phone,
             most_itog_cont,
-        ]
+        ] if mobile_spacing else [most_itog_cont]
         dialog_controls.append(
             ft.Container(height=20, visible=getattr(border, "visible", False))
         )
@@ -885,7 +945,7 @@ class Fr_Libs:
         self.new_task_dialog = self.host(
             content=ft.Column(
                 dialog_controls,
-                spacing=0 if self.web else 10,
+                spacing=10 if mobile_spacing else 0,
             ),
             expand=True
         )

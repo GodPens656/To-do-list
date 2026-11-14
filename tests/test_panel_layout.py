@@ -22,7 +22,7 @@ class PanelLayoutTests(unittest.TestCase):
                 back.web, back.phone = False, phone
                 back.settings = Path(directory) / "settings.txt"
                 back.set_default_settings()
-                self.assertEqual(back.read_settings()["action_panel_position"], "bottom" if phone else "top")
+                self.assertEqual(back.read_settings()["action_panel_position"], "left")
                 self.assertEqual(back.read_settings()["group_panel_position"], "top")
                 for position, _ in ACTION_PANEL_OPTIONS:
                     back.redact_setting("action_panel_position", position)
@@ -34,7 +34,7 @@ class PanelLayoutTests(unittest.TestCase):
                     self.assertEqual(reopened.read_settings()["group_panel_position"], "bottom")
                 back.redact_setting("action_panel_position", "invalid")
                 back.redact_setting("group_panel_position", "left")
-                self.assertEqual(back.read_settings()["action_panel_position"], "bottom" if phone else "top")
+                self.assertEqual(back.read_settings()["action_panel_position"], "left")
                 self.assertEqual(back.read_settings()["group_panel_position"], "top")
 
     def test_positions_keep_actions_reachable_and_lists_lazy_in_all_effects(self):

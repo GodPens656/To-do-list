@@ -201,7 +201,9 @@ class DesktopGlassTests(unittest.TestCase):
             front.libs.prepare(front._groups_screen)
             panels = [c for c in walk_controls(front._groups_screen)
                       if isinstance(c, ft.Container) and c.blur is not None]
-            self.assertEqual(panels, [])
+            body = front._groups_screen.content.content.controls[1]
+            self.assertEqual(panels, [body])
+            self.assertIsNotNone(body.border)
             self.assertIsNone(front.groups_btns_cont.bgcolor)
             self.assertEqual(front.groups_btns_cont.gradient, glass_gradient(front.theme))
             self.assert_outer_material(front._groups_screen, panels)
@@ -245,13 +247,17 @@ class MobileGlassTests(unittest.TestCase):
                             for c in highlights if c is not toolbar))
         self.assertFalse(any(getattr(c, "_nd_glass_skin", None) for c in controls))
 
-    def assert_overlay(self, screen, list_container, scrollable, toolbar):
+    def assert_overlay(self, screen, list_container, scrollable, toolbar, *, framed=False):
         stack = next(c for c in self.walk(screen) if isinstance(c, ft.Stack))
         self.assertIs(stack.controls[0], list_container)
         self.assertEqual(list_container.bottom, 0)
         self.assertIsNone(list_container.bgcolor)
-        self.assertIsNone(list_container.gradient)
-        self.assertIsNone(list_container.border)
+        if framed:
+            self.assertIsNotNone(list_container.gradient)
+            self.assertIsNotNone(list_container.border)
+        else:
+            self.assertIsNone(list_container.gradient)
+            self.assertIsNone(list_container.border)
         menu = stack.controls[-1]
         self.assertIs(menu.content, toolbar)
         self.assertGreater(menu.bottom, 0)
@@ -264,7 +270,8 @@ class MobileGlassTests(unittest.TestCase):
     def test_toolbar_keeps_gloss_and_cards_keep_light_material_as_the_list_grows(self):
         for dark in (False, True):
             with self.subTest(dark=dark):
-                front = make_front(phone=True, dark=dark, effect="liquid_glass_half")
+                front = make_front(phone=True, dark=dark, effect="liquid_glass_half",
+                                   settings={"action_panel_position": "bottom"})
                 self.assertIsNone(front.root_view.decoration)
                 for count in (1, 30):
                     for index in range(count):
@@ -286,7 +293,7 @@ class MobileGlassTests(unittest.TestCase):
                 self.assert_light_material_and_toolbar_gloss(screen, front.groups_btns_cont, front.theme)
                 stack = next(c for c in self.walk(screen) if isinstance(c, ft.Stack))
                 self.assert_overlay(screen, stack.controls[0], front._groups_column,
-                                    front.groups_btns_cont)
+                                    front.groups_btns_cont, framed=True)
 
     def test_half_glass_styles_later_controls_without_wrappers_or_filters(self):
         theme = resolve_theme("chatgpt", ft.Brightness.LIGHT, "liquid_glass_half")
@@ -327,7 +334,8 @@ class MobileGlassTests(unittest.TestCase):
                             for c in self.walk(host) if isinstance(c, ft.Container)))
 
     def test_mobile_list_keeps_search_completion_and_last_task_deletion(self):
-        front = make_front(phone=True, effect="liquid_glass_half")
+        front = make_front(phone=True, effect="liquid_glass_half",
+                           settings={"action_panel_position": "bottom"})
         front._update_control = Mock()
         front.back.saveB("Единственное дело", "default")
         front.render_daily_repeat_tasks()

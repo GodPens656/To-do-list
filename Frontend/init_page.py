@@ -10,7 +10,10 @@ from .dayplanner import PlannerHost
 from Backend.app_paths import get_assets_dir
 from Backend.core import Backend
 from Backend.extended import Backend2
-from Backend.validation import MAX_GROUP_NAME_LENGTH, MAX_TEXT_LENGTH, text_length_error
+from Backend.schedule import normalize_weekdays
+from Backend.validation import (
+    MAX_GROUP_NAME_LENGTH, MAX_TEXT_LENGTH, should_collapse_task, text_length_error,
+)
 from Backend.attachments import AttachmentQuotaError
 from Backend.cloud import Cloud
 from .libs import Fr_Libs
@@ -148,6 +151,7 @@ class Front(NotesMixin, ReorderingMixin):
         )
 
         self.back.on_data_change = self._on_data_change
+        self.back.on_achievements_change = self._on_achievements_change
 
         """Фоновое автообновление дел из облака раз в 10 минут"""
         self.auto_update_service = AutoUpdateService(
@@ -224,6 +228,15 @@ class Front(NotesMixin, ReorderingMixin):
         # render: controls may already reflect the intervening local action.
         self._task_render_signature = None
         self.notification_service.data_changed()
+
+    def _on_achievements_change(self, previous, current):
+        if self._app_locked:
+            return
+        from .achievements import AchievementNotifications
+
+        if not hasattr(self, "_achievement_notifications"):
+            self._achievement_notifications = AchievementNotifications(self)
+        self._achievement_notifications.show(previous, current)
 
     def _start_unlocked_app(self):
         self.notification_service.setup()
@@ -993,7 +1006,8 @@ class Front(NotesMixin, ReorderingMixin):
                 ),
                 ft.Row([save_default_button, reset_default_button], wrap=True),
                 ft.Row([back_button, apply_button], wrap=True),
-            ]
+            ],
+            framed=True,
         )
         self.open_page(header, content, back_button, "task-filter")
 
@@ -1180,6 +1194,7 @@ class Front(NotesMixin, ReorderingMixin):
         """Adds the single-choice metadata picker and returns its current values."""
         metadata = metadata or {}
         deadline = metadata.get("deadline") or ""
+        collapse_task = self.libs.add_task_collapse_control(dialog, metadata.get("collapse", False))
         deadline_days = metadata.get("deadline_days")
         if deadline_as_days and deadline_days in (None, "") and deadline:
             try:
@@ -1196,7 +1211,7 @@ class Front(NotesMixin, ReorderingMixin):
         )
         label = ft.Text("Выберите дополнительную информацию о деле", size=self.libs.text_size(16),
                         weight=ft.FontWeight.W_500, color=self.TxtColor)
-        selector = ft.Dropdown(value=kind, width=self.libs.width_dialogs * 0.95, options=[
+        selector = self.libs.create_task_dropdown(value=kind, options=[
             ft.dropdown.Option(key="created_date", text="Дата создания дела"),
             ft.dropdown.Option(key="deadline", text="Дедлайн дела"),
             ft.dropdown.Option(key="priority", text="Важность дела"),
@@ -1211,10 +1226,11 @@ class Front(NotesMixin, ReorderingMixin):
                                       visible=kind == "deadline")
         deadline_button = self.libs.create_style_button("Выбрать дату", ft.Icons.CALENDAR_MONTH)
         deadline_button.visible = kind == "deadline" and not deadline_as_days
-        priority_dropdown = ft.Dropdown(label="Важность дела", value=priority,
+        priority_dropdown = self.libs.create_task_dropdown(label="Важность дела", value=priority,
             options=[ft.dropdown.Option(key=value, text=value) for value in
                      ("Неважно", "Важно", "Очень важно")],
-            width=self.libs.width_dialogs * 0.95, visible=kind == "priority")
+            visible=kind == "priority")
+        priority_row = ft.Row([priority_dropdown], visible=priority_dropdown.visible)
 
         def on_deadline_change(event):
             picked = self._picker_event_date(event)
@@ -1233,18 +1249,21 @@ class Front(NotesMixin, ReorderingMixin):
             deadline_field.visible = selector.value == "deadline"
             deadline_button.visible = selector.value == "deadline" and not deadline_as_days
             priority_dropdown.visible = selector.value == "priority"
+            priority_row.visible = priority_dropdown.visible
             # Переразметка видимых полей ограничена формой метаданных.
             self._update_control(dialog["Main Cont"])
 
         selector.on_select = update_visibility
         controls = dialog["Main Cont"].content.controls
-        controls[-1:-1] = [label, selector, deadline_field, deadline_button, priority_dropdown]
         attachments = AttachmentEditor(
             self.libs, metadata.get("attachments"), back=self.back,
             task_id=task_id or metadata.get("id"), section=attachment_section,
         )
         attachments.refresh()
-        controls.insert(-1, attachments.control)
+        controls[-1:-1] = self.libs.create_task_form_sections(
+            [label, ft.Row([selector]), deadline_field, deadline_button, priority_row],
+            attachments.control,
+        )
 
         def values():
             selected = selector.value
@@ -1273,6 +1292,7 @@ class Front(NotesMixin, ReorderingMixin):
                 "priority": priority_dropdown.value if selected == "priority" else "Неважно",
                 "info_type": selected,
                 "attachments": attachments.values(),
+                "collapse": should_collapse_task(dialog["entry_task"].value, collapse_task.value),
             }
         return values
 
@@ -1308,7 +1328,7 @@ class Front(NotesMixin, ReorderingMixin):
     def add_task(self, e, name_task, status, new_task, repeat_task, group_id=None,
                  mark_as_daily_repeat=False, created_date=None, deadline=None,
                  priority='Неважно', info_type='created_date', *, task_id=None,
-                 group_settings=None, defer_update=False, attachments=None):
+                 group_settings=None, defer_update=False, attachments=None, collapse=False):
         """Функция для добавления дела.
 
         mark_as_daily_repeat=True помечает создаваемое дело как ежедневное
@@ -1322,12 +1342,6 @@ class Front(NotesMixin, ReorderingMixin):
             self.entry_task.label = "Вводите непустое дело"
             self.entry_task.border_color = ft.Colors.RED
             return False
-        elif "---" in name_task:
-            self.libs.open_dialog("Новое дело", "Недопустимый символ: ---", self.page)
-            return False
-        elif "|" in name_task:
-            self.libs.open_dialog("Новое дело", "Недопустимый символ: |", self.page)
-            return False
         else:
             self.entry_task.hint_text = "Обязательно для заполнения"
             self.entry_task.label = "Название дела"
@@ -1337,18 +1351,21 @@ class Front(NotesMixin, ReorderingMixin):
             target_group_id = group_id or (
                 'default' if self.current_group_id == ALL_TASKS_GROUP_ID else self.current_group_id
             ) or 'default'
+            if new_task or repeat_task:
+                collapse = should_collapse_task(name_task, collapse)
             if new_task:
                 id_ = self._guard_attachment_quota(self.back.saveB)(
                     name_task, target_group_id, created_date=created_date,
                     deadline=deadline, priority=priority, info_type=info_type,
                     attachments=attachments,
+                    collapse=collapse,
                 )
                 if id_ is False:
                     return False
                 self.close_dlg("f")  # Закрываем диалог
             elif repeat_task:
                 id_ = self.back.saveB(name_task, target_group_id, is_repeat=mark_as_daily_repeat,
-                                      attachments=attachments)
+                                      attachments=attachments, collapse=collapse)
             else:
                 id_ = task_id if task_id is not None else self.back.read_id(name_task)
             # Храним и ищем исходное название; переносы нужны только для показа.
@@ -1413,6 +1430,7 @@ class Front(NotesMixin, ReorderingMixin):
                 group_settings=group_settings,
                 attachments=attachments,
                 on_copy=copy_task_name, on_repeat=make_task_repeating,
+                collapse=collapse,
             )
             row = widgets[0]
             row.data = name_task  # Поиск не зависит от переносов для отображения.
@@ -1466,6 +1484,7 @@ class Front(NotesMixin, ReorderingMixin):
                             task_data.get("priority", "Неважно"),
                             task_data.get("info_type", "created_date"),
                             attachments=task_data.get("attachments"),
+                            collapse=task_data.get("collapse", False),
                             on_copy=copy_task_name, on_repeat=make_task_repeating,
                         )
                         rebuilt_row = rebuilt_widgets[0]
@@ -1525,7 +1544,8 @@ class Front(NotesMixin, ReorderingMixin):
                         # самой строки и сводки, без обхода остальных дел.
                         self._update_control(task_row, self.task_overview)
 
-                checkbox.on_change = save_status_and_refresh
+                if checkbox is not None:
+                    checkbox.on_change = save_status_and_refresh
                 task_widgets[1].on_click = lambda e, i=id_, r=task_row: self.page.run_task(
                     delete_task, e, i, r
                 )
@@ -1707,19 +1727,53 @@ class Front(NotesMixin, ReorderingMixin):
         if not any(group["id"] == 'default' for group in groups):
             groups.insert(0, {"name": "Без группы", "id": "default"})
         value = self.current_group_id if any(group["id"] == self.current_group_id for group in groups) else 'default'
-        return ft.Dropdown(
+        return self.libs.create_task_dropdown(
             label="Группа дел",
             value=value,
             options=[
                 ft.dropdown.Option(key=group["id"], text=group["name"])
                 for group in groups
             ],
-            width=self.libs.width_dialogs * 0.95,
         )
+
+    def _show_task_schedule_error(self, dialog, control):
+        """Раскрывает настройки, чтобы ошибка не оставалась в скрытом поле."""
+        section = dialog["schedule_settings"]
+        tile = section if isinstance(section, ft.ExpansionTile) else section.content
+        if not tile.expanded:
+            tile.expanded = True
+            self._update_control(section)
+        else:
+            self._update_control(control)
+
+    def _repeat_weekday_values(self, dialog, value=1):
+        """Заполняет дни недели и возвращает проверку выбранных дней."""
+        checks = dialog["weekday_checks"]
+        error = dialog["weekday_error"]
+        selected = normalize_weekdays(value)
+
+        def clear_error(_):
+            if error.visible:
+                error.visible = False
+                self._update_control(error)
+
+        for checkbox in checks:
+            checkbox.value = checkbox.data in selected
+            checkbox.on_change = clear_error
+
+        def read_weekdays():
+            days = [checkbox.data for checkbox in checks if checkbox.value]
+            if not days:
+                error.visible = True
+                self._show_task_schedule_error(dialog, dialog["weekday_picker"])
+                return None
+            return days
+
+        return read_weekdays
 
     def open_repeat_dialog(self, *, name="", group_id=None):
         """Функция для открытия диалога с запросом имени повторяющегося дела
-        и его периодичности: ежедневно, еженедельно (день недели),
+        и его периодичности: ежедневно, еженедельно (дни недели),
         ежемесячно (число месяца 1-31), ежегодно (дата) или свой интервал
         (число дней от 1 до 367)."""
         dialog = self.libs.widgets_for_ask_task(
@@ -1735,7 +1789,8 @@ class Front(NotesMixin, ReorderingMixin):
         self.libs.update_text_counter(entry_task_rep)
         repeat_type_dd = dialog["repeat_type_dd"]
         entry_interval_rep = dialog["entry_interval"]
-        weekday_dd = dialog["weekday_dd"]
+        weekday_picker = dialog["weekday_picker"]
+        weekday_values = self._repeat_weekday_values(dialog)
         month_day_entry = dialog["month_day_entry"]
         year_date_button = dialog["year_date_button"]
         year_date_field = dialog["year_date_field"]
@@ -1743,7 +1798,9 @@ class Front(NotesMixin, ReorderingMixin):
         if group_id is not None:
             group_dropdown.value = group_id
         main_cont = dialog["Main Cont"]
-        main_cont.content.controls.insert(3, group_dropdown)
+        section = dialog["schedule_settings"]
+        tile = section if isinstance(section, ft.ExpansionTile) else section.content
+        tile.controls[0].controls.insert(0, ft.Row([group_dropdown]))
         metadata_values = self._add_task_metadata_controls(
             dialog, deadline_as_days=True, attachment_section="repeat_tasks",
         )
@@ -1787,7 +1844,7 @@ class Front(NotesMixin, ReorderingMixin):
             периодичности повторения, и скрывает остальные."""
             repeat_type = repeat_type_dd.value
             entry_interval_rep.visible = repeat_type == "custom"
-            weekday_dd.visible = repeat_type == "week"
+            weekday_picker.visible = repeat_type == "week"
             month_day_entry.visible = repeat_type == "month"
             year_date_button.visible = repeat_type == "year"
             year_date_field.visible = repeat_type == "year"
@@ -1815,15 +1872,16 @@ class Front(NotesMixin, ReorderingMixin):
                 except (TypeError, ValueError):
                     entry_interval_rep.label = "Введите число от 1 до 367"
                     entry_interval_rep.border_color = ft.Colors.RED
-                    # Подсветка ошибки ограничена полем интервала.
-                    self._update_control(entry_interval_rep)
+                    self._show_task_schedule_error(dialog, entry_interval_rep)
                     return
                 entry_interval_rep.label = "Повторять через (дней)"
                 entry_interval_rep.border_color = None
                 backend_type, backend_value = "day", interval
 
             elif repeat_type == "week":
-                backend_type, backend_value = "week", int(weekday_dd.value)
+                backend_type, backend_value = "week", weekday_values()
+                if backend_value is None:
+                    return
 
             elif repeat_type == "month":
                 try:
@@ -1833,8 +1891,7 @@ class Front(NotesMixin, ReorderingMixin):
                 except (TypeError, ValueError):
                     month_day_entry.label = "Введите число от 1 до 31"
                     month_day_entry.border_color = ft.Colors.RED
-                    # Подсветка ошибки ограничена полем числа месяца.
-                    self._update_control(month_day_entry)
+                    self._show_task_schedule_error(dialog, month_day_entry)
                     return
                 month_day_entry.label = "Число месяца"
                 month_day_entry.border_color = None
@@ -1844,8 +1901,7 @@ class Front(NotesMixin, ReorderingMixin):
                 if not year_date_field.value:
                     year_date_field.label = "Сначала выберите дату"
                     year_date_field.border_color = ft.Colors.RED
-                    # Подсветка ошибки ограничена полем годовой даты.
-                    self._update_control(year_date_field)
+                    self._show_task_schedule_error(dialog, year_date_field)
                     return
                 year_date_field.label = "Выбранная дата"
                 year_date_field.border_color = None
@@ -1934,9 +1990,11 @@ class Front(NotesMixin, ReorderingMixin):
             self.page.update()
 
         date_button.on_click = open_picker
-        main_cont.content.controls.insert(3, group_dropdown)
-        main_cont.content.controls.insert(4, date_field)
-        main_cont.content.controls.insert(5, date_button)
+        dialog["schedule_settings"] = self.libs.create_task_form_section(
+            ft.Icons.CALENDAR_MONTH_ROUNDED, "Настройки появления",
+            [ft.Row([group_dropdown]), date_field, date_button],
+        )
+        main_cont.content.controls.insert(4, dialog["schedule_settings"])
 
         @self._guard_attachment_quota
         def create_postponed(_):
@@ -1945,8 +2003,7 @@ class Front(NotesMixin, ReorderingMixin):
             if not date_field.value:
                 date_field.label = "Сначала выберите дату"
                 date_field.border_color = ft.Colors.RED
-                # Отсутствующая дата отмечается только в поле даты.
-                self._update_control(date_field)
+                self._show_task_schedule_error(dialog, date_field)
                 return
 
             metadata = metadata_values()
@@ -1961,8 +2018,7 @@ class Front(NotesMixin, ReorderingMixin):
             if not created:
                 date_field.label = "Некорректная дата"
                 date_field.border_color = ft.Colors.RED
-                # Ошибка сохранения отображается только у даты.
-                self._update_control(date_field)
+                self._show_task_schedule_error(dialog, date_field)
                 return
 
             self.utils2.add_to_cont_with_postponed_task(
@@ -1989,13 +2045,18 @@ class Front(NotesMixin, ReorderingMixin):
         self.libs.update_text_counter(entry)
         repeat_type_dd = dialog["repeat_type_dd"]
         entry_interval = dialog["entry_interval"]
-        weekday_dd = dialog["weekday_dd"]
+        weekday_picker = dialog["weekday_picker"]
+        weekday_values = self._repeat_weekday_values(
+            dialog, repeat_value if repeat_type == "week" else 1,
+        )
         month_day_entry = dialog["month_day_entry"]
         year_date_button = dialog["year_date_button"]
         year_date_field = dialog["year_date_field"]
         group_dropdown = self.create_group_dropdown()
         group_dropdown.value = group_id
-        dialog["Main Cont"].content.controls.insert(3, group_dropdown)
+        section = dialog["schedule_settings"]
+        tile = section if isinstance(section, ft.ExpansionTile) else section.content
+        tile.controls[0].controls.insert(0, ft.Row([group_dropdown]))
         metadata_values = self._add_task_metadata_controls(
             dialog, metadata, deadline_as_days=True,
             task_id=task_id, attachment_section="repeat_tasks",
@@ -2007,8 +2068,6 @@ class Front(NotesMixin, ReorderingMixin):
         repeat_type_dd.value = ui_repeat_type
         if ui_repeat_type == "custom":
             entry_interval.value = str(repeat_value)
-        elif ui_repeat_type == "week":
-            weekday_dd.value = str(repeat_value)
         elif ui_repeat_type == "month":
             month_day_entry.value = str(repeat_value)
         elif ui_repeat_type == "year":
@@ -2034,7 +2093,7 @@ class Front(NotesMixin, ReorderingMixin):
         def update_repeat_widgets(e=None, *, update=True):
             selected = repeat_type_dd.value
             entry_interval.visible = selected == "custom"
-            weekday_dd.visible = selected == "week"
+            weekday_picker.visible = selected == "week"
             month_day_entry.visible = selected == "month"
             year_date_button.visible = selected == "year"
             year_date_field.visible = selected == "year"
@@ -2059,11 +2118,12 @@ class Front(NotesMixin, ReorderingMixin):
                         raise ValueError
                 except (TypeError, ValueError):
                     entry_interval.label, entry_interval.border_color = "Введите число от 1 до 367", ft.Colors.RED
-                    # Ошибка интервала не требует обновления списка за формой.
-                    self._update_control(entry_interval)
+                    self._show_task_schedule_error(dialog, entry_interval)
                     return
             elif selected == "week":
-                backend_type, backend_value = "week", int(weekday_dd.value)
+                backend_type, backend_value = "week", weekday_values()
+                if backend_value is None:
+                    return
             elif selected == "month":
                 try:
                     backend_type, backend_value = "month", int(month_day_entry.value)
@@ -2071,14 +2131,12 @@ class Front(NotesMixin, ReorderingMixin):
                         raise ValueError
                 except (TypeError, ValueError):
                     month_day_entry.label, month_day_entry.border_color = "Введите число от 1 до 31", ft.Colors.RED
-                    # Обновляется только поле с ошибкой числа месяца.
-                    self._update_control(month_day_entry)
+                    self._show_task_schedule_error(dialog, month_day_entry)
                     return
             elif selected == "year":
                 if not year_date_field.value:
                     year_date_field.label, year_date_field.border_color = "Сначала выберите дату", ft.Colors.RED
-                    # Обновляется только поле с отсутствующей годовой датой.
-                    self._update_control(year_date_field)
+                    self._show_task_schedule_error(dialog, year_date_field)
                     return
                 backend_type, backend_value = "year", year_date_field.value
             else:
@@ -2146,10 +2204,12 @@ class Front(NotesMixin, ReorderingMixin):
             self.page.update()
 
         date_button.on_click = open_picker
+        dialog["schedule_settings"] = self.libs.create_task_form_section(
+            ft.Icons.CALENDAR_MONTH_ROUNDED, "Настройки появления",
+            [ft.Row([group_dropdown]), date_field, date_button],
+        )
         content = dialog["Main Cont"].content.controls
-        content.insert(3, group_dropdown)
-        content.insert(4, date_field)
-        content.insert(5, date_button)
+        content.insert(4, dialog["schedule_settings"])
 
         @self._guard_attachment_quota
         def save(_):
@@ -2158,8 +2218,7 @@ class Front(NotesMixin, ReorderingMixin):
             if not date_field.value:
                 date_field.label = "Сначала выберите дату"
                 date_field.border_color = ft.Colors.RED
-                # Ошибка в редакторе относится только к отсутствующей дате.
-                self._update_control(date_field)
+                self._show_task_schedule_error(dialog, date_field)
                 return
 
             updated_metadata = metadata_values()
@@ -2171,8 +2230,7 @@ class Front(NotesMixin, ReorderingMixin):
             else:
                 date_field.label = "Некорректная дата"
                 date_field.border_color = ft.Colors.RED
-                # Ошибка изменения даты не затрагивает всю страницу.
-                self._update_control(date_field)
+                self._show_task_schedule_error(dialog, date_field)
 
         dialog["btn_create_task"].on_click = save
         entry.on_submit = save
@@ -2323,7 +2381,8 @@ class Front(NotesMixin, ReorderingMixin):
         for task, group_id, metadata in tasks:
             self.back.saveB(task, group_id, is_repeat=True,
                             deadline=metadata["deadline"], priority=metadata["priority"],
-                            info_type=metadata["info_type"], attachments=metadata.get("attachments"))
+                            info_type=metadata["info_type"], attachments=metadata.get("attachments"),
+                            collapse=metadata.get("collapse", False))
 
         if tasks:
             self.cloud.alg_for_redact()
@@ -2444,7 +2503,8 @@ class Front(NotesMixin, ReorderingMixin):
             # Отложенное дело отображается в общем списке дел.
             self.back.saveB(task, group_id, is_repeat=True,
                             deadline=metadata["deadline"], priority=metadata["priority"],
-                            info_type=metadata["info_type"], attachments=metadata.get("attachments"))
+                            info_type=metadata["info_type"], attachments=metadata.get("attachments"),
+                            collapse=metadata.get("collapse", False))
 
         if tasks:
             self.cloud.alg_for_redact()
@@ -2502,6 +2562,7 @@ class Front(NotesMixin, ReorderingMixin):
                 group_settings=settings_by_group.get(data.get("group", "default"), group_settings),
                 defer_update=True,
                 attachments=data.get("attachments"),
+                collapse=data.get("collapse", False),
             )
             yield
 
@@ -2563,14 +2624,7 @@ class Front(NotesMixin, ReorderingMixin):
             self._group_tabs_signature = signature
             self.group_tab_bar.tabs = [
                 ft.Tab(
-                    label=self._wrap_group_tab(group["id"], ft.Row([
-                        ft.Icon(ft.Icons.NOTES_ROUNDED if group.get("type") == "notes"
-                                else ft.Icons.CHECKLIST_ROUNDED, size=18),
-                        ft.Text(group["name"] if len(group["name"]) <= 24
-                                else group["name"][:23] + "…", max_lines=1),
-                        *([ft.Icon(ft.Icons.LINK_ROUNDED, size=16)]
-                          if group.get("is_shared") else []),
-                    ], spacing=8, tight=True)),
+                    label=self._group_tab_label(group),
                     data=group["id"], tooltip=group["name"], height=40,
                 ) for group in groups
             ]
@@ -2579,6 +2633,28 @@ class Front(NotesMixin, ReorderingMixin):
         self.group_tabs.selected_index = next(
             (index for index, group in enumerate(groups) if group["id"] == self.current_group_id), 0,
         )
+
+    def _group_tab_label(self, group):
+        label = ft.Row([
+            ft.Icon(ft.Icons.NOTES_ROUNDED if group.get("type") == "notes"
+                    else ft.Icons.CHECKLIST_ROUNDED, size=18),
+            ft.Text(group["name"] if len(group["name"]) <= 24
+                    else group["name"][:23] + "…", max_lines=1),
+            *([ft.Icon(ft.Icons.LINK_ROUNDED, size=16)] if group.get("is_shared") else []),
+        ], spacing=8, tight=True)
+        if not self.phone and group["id"] != ALL_TASKS_GROUP_ID:
+            _, items = self._group_menu_actions(group, self._refresh_groups_from_tab)
+            label = ft.Container(
+                content=ft.ContextMenu(content=label, secondary_items=items, tertiary_trigger=None),
+                theme=self.utils._task_menu_appearance()[0],
+            )
+        return self._wrap_group_tab(group["id"], label)
+
+    def _refresh_groups_from_tab(self):
+        self._ensure_current_group()
+        self.render_daily_repeat_tasks()
+        self._refresh_group_management()
+        self._update_control(self.main_cont)
 
     def _on_group_tab_change(self, event):
         if self._app_locked:
@@ -2654,7 +2730,7 @@ class Front(NotesMixin, ReorderingMixin):
         actions = self._build_group_actions()
         header.width = None
         groups_column.expand = True
-        main = self.libs.create_style_cont([groups_column])
+        main = self.libs.create_style_cont([groups_column], framed=True)
         main.width = None
         main.content.scroll = None
         self.groups_btns_cont = ft.Container(content=ft.Column([
@@ -2733,11 +2809,10 @@ class Front(NotesMixin, ReorderingMixin):
             counts[task.get("group", "default")] = (total + 1, done + bool(task.get("status")))
         return counts
 
-    def _append_group_row(self, groups_column, group, refresh_groups, counts=None):
-        """Добавляет одну строку в уже существующий экран групп."""
+    def _group_menu_actions(self, group, refresh_groups):
+        """Общие действия для меню управления группой и ПКМ по вкладке."""
         group_id = group["id"]
         group_name = group["name"]
-        is_notes = group.get('type') == 'notes'
 
         def edit_group(_=None, ident=group_id, old_name=group_name):
             dialog = self.libs.widgets_for_ask_task(
@@ -2770,26 +2845,34 @@ class Front(NotesMixin, ReorderingMixin):
                 if not self.web:
                     self.page.update()
 
+        return edit_group, [
+            *([] if group.get("is_shared") else [
+                ft.PopupMenuItem(content="Редактировать", icon=ft.Icons.EDIT_ROUNDED,
+                                 on_click=edit_group),
+            ]),
+            *([] if group_id == 'default' else [
+                ft.PopupMenuItem(content="Отключить" if group.get("is_shared") else "Удалить",
+                                 icon=ft.Icons.LINK_OFF_ROUNDED if group.get("is_shared") else ft.Icons.DELETE_ROUNDED,
+                                 on_click=delete_group)
+            ]),
+            *([ft.PopupMenuItem(
+                content="Сделать группу общей",
+                icon=ft.Icons.GROUP_ADD_ROUNDED,
+                on_click=lambda _: self._open_share_group_dialog(group),
+            )] if not group.get("is_shared") else []),
+        ]
+
+    def _append_group_row(self, groups_column, group, refresh_groups, counts=None):
+        """Добавляет одну строку в уже существующий экран групп."""
+        group_id = group["id"]
+        group_name = group["name"]
+        is_notes = group.get('type') == 'notes'
+        edit_group, items = self._group_menu_actions(group, refresh_groups)
         menu = ft.PopupMenuButton(
             icon=ft.Icons.MORE_VERT,
             icon_color=self.libs.colors["MutedColor"],
             tooltip="Действия с группой",
-            items=[
-                *([] if group.get("is_shared") else [
-                    ft.PopupMenuItem(content="Редактировать", icon=ft.Icons.EDIT_ROUNDED,
-                                     on_click=edit_group),
-                ]),
-                *([] if group_id == 'default' else [
-                    ft.PopupMenuItem(content="Отключить" if group.get("is_shared") else "Удалить",
-                                     icon=ft.Icons.LINK_OFF_ROUNDED if group.get("is_shared") else ft.Icons.DELETE_ROUNDED,
-                                     on_click=delete_group)
-                ]),
-                *([ft.PopupMenuItem(
-                    content="Сделать группу общей",
-                    icon=ft.Icons.GROUP_ADD_ROUNDED,
-                    on_click=lambda _: self._open_share_group_dialog(group),
-                )] if not group.get("is_shared") else []),
-            ],
+            items=items,
         )
         total, done = (counts if counts is not None else self._group_task_counts()).get(group_id, (0, 0))
         subtitle = (f"Заметок: {group.get('note_count', 0)}" if is_notes else
@@ -2889,7 +2972,7 @@ class Front(NotesMixin, ReorderingMixin):
                               icon_color=self.libs.FletIconColor, on_click=copy_name),
             ]),
             password, message, warning, copy_status, ft.Row([create, progress], wrap=True), cancel,
-        ])
+        ], framed=True)
         self.open_modified_dialog(self.libs.create_style_header("Общая группа"), content, cancel)
 
     def _open_create_group(self, _=None):

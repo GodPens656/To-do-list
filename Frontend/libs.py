@@ -9,7 +9,7 @@ from .typography import scaled_text_size
 from .links import linked_text
 from .wallpaper import WallpaperManager
 from Backend.core import Backend
-from Backend.validation import MAX_TEXT_LENGTH
+from Backend.validation import MAX_TEXT_LENGTH, TASK_COLLAPSE_THRESHOLD, should_collapse_task
 
 
 class Fr_Libs:
@@ -119,6 +119,59 @@ class Fr_Libs:
             dark=self.icon_theme == "dark", **kwargs,
         )
 
+    def collapsible_task_text(self, text, collapse=False):
+        """Keep the full linked text and initially show only its first three lines."""
+        if not collapse:
+            return text
+        text.max_lines = 3
+        text.overflow = ft.TextOverflow.ELLIPSIS
+        label = ft.Text("Развернуть", size=self.text_size(12), color=self.TxtColor)
+        arrow = ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED, size=16, color=self.FletIconColor)
+        toggle = ft.TextButton(
+            content=ft.Row([arrow, label], spacing=6, tight=True),
+            style=ft.ButtonStyle(padding=ft.Padding.symmetric(
+                horizontal=12 if self.glass else 6,
+                vertical=6 if self.glass else 0,
+            )),
+        )
+        body = ft.Column([text, toggle], spacing=0, tight=True)
+
+        def toggle_text(_):
+            collapsed = text.max_lines is None
+            text.max_lines = 3 if collapsed else None
+            text.overflow = ft.TextOverflow.ELLIPSIS if collapsed else None
+            label.value = "Развернуть" if collapsed else "Свернуть"
+            arrow.icon = (ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED if collapsed
+                          else ft.Icons.KEYBOARD_ARROW_UP_ROUNDED)
+            body.update()
+            ft.context.disable_auto_update()
+
+        toggle.on_click = toggle_text
+        return body
+
+    def add_task_collapse_control(self, dialog, collapse=False, *, label="Сворачивать ли дело"):
+        """Add a collapse preference and keep it in sync with the text length."""
+        entry = dialog["entry_task"]
+        checkbox = ft.Checkbox(
+            label=label,
+            value=should_collapse_task(entry.value, collapse),
+            label_style=ft.TextStyle(size=self.text_size(14), color=self.TxtColor),
+            tooltip=("Автоматически включается при сохранении текста длиннее "
+                     f"{TASK_COLLAPSE_THRESHOLD} символов."),
+        )
+        controls = dialog["Main Cont"].content.controls
+        controls.insert(controls.index(entry) + 1, checkbox)
+        on_text_change = entry.on_change
+
+        def update_collapse(event):
+            on_text_change(event)
+            if should_collapse_task(entry.value) and not checkbox.value:
+                checkbox.value = True
+                checkbox.update()
+
+        entry.on_change = update_collapse
+        return checkbox
+
     def host(self, **kwargs):
         if self.glass or self.glass_toolbar:
             return GlassHost(self.theme, self.colors, mobile=self.glass_mobile, **kwargs)
@@ -199,6 +252,10 @@ class Fr_Libs:
     def update_text_counter(entry, max_length=MAX_TEXT_LENGTH):
         entry.helper = f"{len(entry.value or '')}/{max_length} символов"
 
+    def create_task_dropdown(self, **kwargs):
+        """Список для горизонтального Row: поле и меню занимают его ширину."""
+        return ft.Dropdown(expand=True, expanded_insets=0, **kwargs)
+
     def widgets_for_ask_task(
         self,
         ask,
@@ -214,7 +271,7 @@ class Fr_Libs:
         (используется для повторяющихся дел). В зависимости от выбранного
         типа периодичности показывается свой набор виджетов:
         - Ежедневно: без дополнительных виджетов
-        - Еженедельно: выпадающий список с днями недели
+        - Еженедельно: выбор одного или нескольких дней недели
         - Ежемесячно: поле ввода числа месяца (1-31)
         - Ежегодно: кнопка выбора даты и поле с выбранной датой
         - Свой интервал: поле ввода числа дней (1-367)"""
@@ -235,13 +292,12 @@ class Fr_Libs:
 
         self.entry_task.on_change = on_text_change
 
-        self.repeat_type_dd = ft.Dropdown(
+        self.repeat_type_dd = self.create_task_dropdown(
             label="Периодичность повторения",
             value="day",
             options=[
                 ft.dropdown.Option(key=k, text=v) for k, v in self.REPEAT_TYPE_OPTIONS
             ],
-            width=self.width_dialogs * 0.95,
             visible=with_interval,
         )
 
@@ -254,12 +310,26 @@ class Fr_Libs:
             visible=False,
         )
 
-        self.weekday_dd = ft.Dropdown(
-            label="День недели",
-            value="1",
-            options=[
-                ft.dropdown.Option(key=k, text=v) for k, v in self.WEEKDAY_OPTIONS
+        self.weekday_checks = [
+            ft.Checkbox(
+                label=label, value=key == "1", data=int(key),
+                label_style=ft.TextStyle(size=self.text_size(14), color=self.TxtColor),
+            )
+            for key, label in self.WEEKDAY_OPTIONS
+        ]
+        self.weekday_error = ft.Text(
+            "Выберите хотя бы один день недели", color=ft.Colors.RED, visible=False,
+        )
+        self.weekday_picker = ft.Column(
+            [
+                ft.Text("Дни недели", color=self.TxtColor),
+                ft.Row([
+                    ft.Container(checkbox, width=150, alignment=ft.Alignment.CENTER_LEFT)
+                    for checkbox in self.weekday_checks
+                ], wrap=True, spacing=0, run_spacing=0),
+                self.weekday_error,
             ],
+            spacing=4,
             width=self.width_dialogs * 0.95,
             visible=False,
         )
@@ -333,6 +403,12 @@ class Fr_Libs:
             width=self.width_dialogs * 0.95,
         )
 
+        schedule_settings = self.create_task_form_section(
+            ft.Icons.REPEAT_ROUNDED, "Настройки повторения",
+            [ft.Row([self.repeat_type_dd]), self.entry_interval, self.weekday_picker,
+             self.month_day_entry, self.year_date_button, self.year_date_field],
+        ) if with_interval else None
+
         Cont_AC = ft.Container(
             content=ft.Column(
                 [
@@ -344,12 +420,7 @@ class Fr_Libs:
                         color=self.TxtColor,
                     ),
                     self.entry_task,
-                    self.repeat_type_dd,
-                    self.entry_interval,
-                    self.weekday_dd,
-                    self.month_day_entry,
-                    self.year_date_button,
-                    self.year_date_field,
+                    *([schedule_settings] if with_interval else []),
                     row_for_buttons,
                 ],
                 scroll=ft.ScrollMode.AUTO,
@@ -368,10 +439,13 @@ class Fr_Libs:
             "entry_task": self.entry_task,
             "repeat_type_dd": self.repeat_type_dd,
             "entry_interval": self.entry_interval,
-            "weekday_dd": self.weekday_dd,
+            "weekday_picker": self.weekday_picker,
+            "weekday_checks": self.weekday_checks,
+            "weekday_error": self.weekday_error,
             "month_day_entry": self.month_day_entry,
             "year_date_button": self.year_date_button,
             "year_date_field": self.year_date_field,
+            "schedule_settings": schedule_settings,
             "cancel": self.cancel,
             "Header": header_C,
             "Main Cont": Cont_AC,
@@ -836,6 +910,29 @@ class Fr_Libs:
             panel._nd_glass_tint = self.colors["GlassButtonTint"] if framed else None
             return panel
         return tile
+
+    def create_task_form_section(self, icon, title, controls):
+        """Раскрываемый раздел формы, сохраняющий значения скрытых полей."""
+        section = self.create_style_expansion_category(
+            icon, title,
+            [ft.Column(controls, spacing=10,
+                       horizontal_alignment=ft.CrossAxisAlignment.STRETCH)],
+            padding=12, framed=True,
+        )
+        tile = section if isinstance(section, ft.ExpansionTile) else section.content
+        tile.title.controls[1].size = self.text_size(14 if self.phone else 16)
+        tile.maintain_state = True
+        return section
+
+    def create_task_form_sections(self, extra_controls, attachment_control):
+        """Группирует необязательные поля дела в раскрываемые разделы."""
+        return [
+            self.create_task_form_section(icon, title, controls)
+            for icon, title, controls in (
+                (ft.Icons.INFO_OUTLINE_ROUNDED, "Дополнительная информация", extra_controls),
+                (ft.Icons.ATTACH_FILE_ROUNDED, "Прикрепление файлов", [attachment_control]),
+            )
+        ]
 
     def create_style_section_title(self, icon, text: str, size=18, icon_color=None):
         """Заголовок раздела с иконкой перед надписью"""

@@ -79,7 +79,7 @@ class RepeatTaskDisabledTests(unittest.TestCase):
                     self.assertEqual(len(row.controls), 2)
                     menu = row.controls[-1]
                     self.assertIsInstance(menu, ft.PopupMenuButton)
-                    self.assertEqual([item.content for item in menu.items], ["Удалить", "Редактировать", "Отключить"])
+                    self.assertEqual([item.content for item in menu.items], ["Редактировать", "Удалить", "Отключить"])
                     self.assertTrue(all(item.icon for item in menu.items))
                     toggle = menu.items[2]
                     toggle.on_click(None)
@@ -94,7 +94,7 @@ class RepeatTaskDisabledTests(unittest.TestCase):
                     row = container.controls[0]
                     self.assertEqual(row.controls[0].controls[2].value, "Дело отключено")
                     front.utils2.on_edit_repeat = Mock()
-                    row.controls[-1].items[1].on_click(None)
+                    row.controls[-1].items[0].on_click(None)
                     self.assertEqual(front.utils2.on_edit_repeat.call_args.args[4], ident)
                     row.controls[-1].items[2].on_click(None)
                     self.assertEqual(row.controls[0].controls[2].value, "Важность: Важно")

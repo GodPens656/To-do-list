@@ -32,7 +32,9 @@ class TaskSchedule:
         self.month = self.today.replace(day=1)
         # The first web frame can arrive before Flet reports the viewport.
         viewport = front.page.width or (360 if front.phone else 1280)
-        self.width = min(1200, max(260, viewport - 2 * front.page_edge_padding))
+        padding = front.page_edge_padding
+        horizontal_padding = padding.left + padding.right if isinstance(padding, ft.Padding) else 2 * padding
+        self.width = min(1200, max(260, viewport - horizontal_padding))
         self.cell_width = max(146, (self.width - 32) / 7)
         dark = str(front.theme).endswith("dark")
         self.accents = {

@@ -51,6 +51,15 @@ class SharedNotesTests(unittest.TestCase):
             member.make_group_shared(task_group, 'пароль')
         self.assertEqual(self.disk.json(self.path), {'type': 'notes', 'notes': []})
 
+    def test_collapse_choice_syncs_between_members(self):
+        self.owner.save_note(self.group_id, 'Первая\nзаметка', self.note_id, collapse=True)
+        member, cloud, member_group = self.join()
+        self.assertTrue(member.read_notes(member_group)[0]['collapse'])
+        member.save_note(member_group, 'Первая\nзаметка', self.note_id, collapse=False)
+        cloud.sync_shared_groups()
+        self.cloud.sync_shared_groups()
+        self.assertFalse(self.owner.read_notes(self.group_id)[0]['collapse'])
+
     def test_simultaneous_text_and_file_edits_merge_and_deletions_propagate(self):
         member, cloud, member_group = self.join()
         self.owner.save_note(self.group_id, 'Новый текст', self.note_id)

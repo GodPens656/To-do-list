@@ -10,9 +10,9 @@ import uuid
 import zipfile
 from PIL import Image, UnidentifiedImageError
 from .core import Backend, local_today
-from .validation import text_length_error
+from .validation import should_collapse_task, text_length_error
 from .security import hash_password, verify_password
-from .schedule import build_schedule
+from .schedule import build_schedule, normalize_weekdays
 from .cloud import Cloud
 from .storage import save_data, empty_data, ensure_split_storage, load_all_sections, save_all_sections
 from .json_migration import migrate_legacy_storage
@@ -702,14 +702,6 @@ class Backend2:
             interval = 1
         return max(1, min(367, interval))
 
-    def _normalize_weekday(self, value):
-        """Приводит день недели к числу от 1 (понедельник) до 7 (воскресенье)"""
-        try:
-            weekday = int(value)
-        except (TypeError, ValueError):
-            weekday = 1
-        return max(1, min(7, weekday))
-
     def _normalize_month_day(self, value):
         """Приводит число месяца к целому числу от 1 до 31"""
         try:
@@ -731,10 +723,10 @@ class Backend2:
     def _normalize_repeat_rule(self, repeat_type, repeat_value):
         """Приводит тип и значение повторения к нормальному виду.
         Поддерживаемые типы: 'day' (интервал в днях, в т.ч. ежедневно=1),
-        'week' (день недели 1-7), 'month' (число месяца 1-31),
+        'week' (список дней недели 1-7), 'month' (число месяца 1-31),
         'year' (день и месяц в формате 'ДД-ММ')"""
         if repeat_type == "week":
-            return "week", self._normalize_weekday(repeat_value)
+            return "week", normalize_weekdays(repeat_value)
         elif repeat_type == "month":
             return "month", self._normalize_month_day(repeat_value)
         elif repeat_type == "year":
@@ -745,6 +737,7 @@ class Backend2:
     def create_repeat_task(self, task, repeat_type="day", repeat_value=1, group_id='default', metadata=None):
         if text_length_error(task):
             return None
+        collapse = should_collapse_task(task, (metadata or {}).get("collapse", False))
         task = task.replace('\n', '{N}')
         repeat_type, repeat_value = self._normalize_repeat_rule(repeat_type, repeat_value)
         today_str = local_today(self.web, self.page).strftime('%d-%m-%Y')
@@ -758,6 +751,7 @@ class Backend2:
             "repeat_type": repeat_type,
             "repeat_value": repeat_value,
             "disabled": False,
+            "collapse": collapse,
             "group": group_id,
             "created_date": metadata.get("created_date") or today_str,
             "deadline": metadata.get("deadline") or "",
@@ -807,7 +801,7 @@ class Backend2:
             return False  # уже добавляли сегодня
 
         if repeat_type == "week":
-            return today.isoweekday() == repeat_value
+            return today.isoweekday() in normalize_weekdays(repeat_value)
         elif repeat_type == "month":
             return today.day == repeat_value
         elif repeat_type == "year":
@@ -841,6 +835,7 @@ class Backend2:
             if self._is_repeat_due(repeat_type, repeat_value, last_date):
                 metadata = {
                     "created_date": item.get("created_date") or today_str,
+                    "collapse": bool(item.get("collapse", False)),
                     "deadline": self._generated_deadline(item, today),
                     "deadline_days": item.get("deadline_days") or "",
                     "priority": item.get("priority") or "Неважно",
@@ -886,6 +881,7 @@ class Backend2:
             task_text = name.replace('{N}', '\n')
             metadata = {
                 "created_date": item.get("created_date") or item.get("last_date") or today_str,
+                "collapse": bool(item.get("collapse", False)),
                 "deadline": item.get("deadline") or "",
                 "deadline_days": item.get("deadline_days") or "",
                 "priority": item.get("priority") or "Неважно",
@@ -921,6 +917,7 @@ class Backend2:
         """Изменяет повторяющееся дело по его ID."""
         if text_length_error(task):
             return False
+        collapse_by_length = should_collapse_task(task)
         task = task.replace('\n', '{N}')
         repeat_type, repeat_value = self._normalize_repeat_rule(repeat_type, repeat_value)
         data = self._load()
@@ -933,6 +930,7 @@ class Backend2:
                 item["group"] = group_id
                 if metadata is not None:
                     item.update(metadata)
+                item["collapse"] = bool(collapse_by_length or item.get("collapse", False))
                 found = True
         if found:
             self._save(data)
@@ -948,6 +946,7 @@ class Backend2:
     def create_postponed_task(self, task, planned_date, group_id='default', metadata=None):
         if text_length_error(task):
             return False
+        collapse = should_collapse_task(task, (metadata or {}).get("collapse", False))
         task = task.replace('\n', '{N}')
         normal_date = self._normalize_postponed_date(planned_date)
         if normal_date is None:
@@ -961,6 +960,7 @@ class Backend2:
             "id": task_id,
             "name": task,
             "date": normal_date.strftime("%d-%m-%Y"),
+            "collapse": collapse,
             "group": group_id,
             "created_date": metadata.get("created_date") or today_str,
             "deadline": metadata.get("deadline") or "",
@@ -987,6 +987,7 @@ class Backend2:
             task_text = name.replace('{N}', '\n')
             metadata = {
                 "created_date": item.get("created_date") or today_str,
+                "collapse": bool(item.get("collapse", False)),
                 "deadline": item.get("deadline") or "",
                 "deadline_days": item.get("deadline_days") or "",
                 "priority": item.get("priority") or "Неважно",
@@ -1014,6 +1015,7 @@ class Backend2:
         """Изменяет отложенное дело по его ID."""
         if text_length_error(task):
             return False
+        collapse_by_length = should_collapse_task(task)
         normalized_date = self._normalize_postponed_date(planned_date)
         if normalized_date is None:
             return False
@@ -1027,6 +1029,7 @@ class Backend2:
                 item["group"] = group_id
                 if metadata is not None:
                     item.update(metadata)
+                item["collapse"] = bool(collapse_by_length or item.get("collapse", False))
                 found = True
         if found:
             self._save(data)
@@ -1052,6 +1055,7 @@ class Backend2:
             if parsed_date <= today:
                 metadata = {
                     "created_date": item.get("created_date") or today.strftime('%d-%m-%Y'),
+                    "collapse": bool(item.get("collapse", False)),
                     "deadline": self._generated_deadline(item, today),
                     "deadline_days": item.get("deadline_days") or "",
                     "priority": item.get("priority") or "Неважно",

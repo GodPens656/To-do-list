@@ -20,6 +20,7 @@ from Backend.crypto import is_encrypted
 from Backend.storage import set_data_encryption
 from Backend.webstorage import WebSessionStore
 from Frontend.attachments import AttachmentEditor, attachment_controls
+from test_glass import walk_controls
 from test_ui_state import make_front, task_menu
 
 
@@ -30,11 +31,16 @@ def image_file():
 
 
 def editor_on_screen(front):
-    body = front.screen_stack[-1].content.controls[0]
-    controls = body.content.content.controls[1].content.controls
-    return next(c for c in controls if isinstance(c, ft.Column)
-                and c.controls and isinstance(c.controls[0], ft.TextButton)
-                and c.controls[0].content == "Прикрепить файлы")
+    pending = [front.screen_stack[-1]]
+    while pending:
+        control = pending.pop()
+        if isinstance(getattr(control, "data", None), AttachmentEditor):
+            return control
+        pending.extend(getattr(control, "controls", None) or [])
+        content = getattr(control, "content", None)
+        if isinstance(content, ft.Control):
+            pending.append(content)
+    raise AssertionError("Attachment editor was not found")
 
 
 class AttachmentTests(unittest.TestCase):
@@ -132,7 +138,7 @@ class AttachmentTests(unittest.TestCase):
                     front.libs.entry_task.value = "Draft"
                     if special == "postponed":
                         form = screen.content.controls[0].content.content.controls[1]
-                        next(c for c in form.content.controls
+                        next(c for c in walk_controls(form)
                              if isinstance(c, ft.TextField) and c.label == "Дата добавления").value = "01-01-2030"
                     front.libs.entry_task.on_submit(None)
                     self.assertIs(front.screen_stack[-1], screen)

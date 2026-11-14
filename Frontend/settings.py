@@ -4,6 +4,7 @@ import flet as ft
 from .controls import LazyListView
 from .attachments import attachment_controls, file_picker
 from Backend.data_archive import MAX_ARCHIVE_BYTES, read_data_archive
+from Backend.schedule import normalize_weekdays
 from flet_color_pickers import ColorLabelType, ColorPicker, PaletteType
 from datetime import datetime
 from pathlib import Path
@@ -701,11 +702,9 @@ class Utils2:
     def _describe_repeat_rule(self, repeat_type, repeat_value):
         """Строит человекочитаемое описание правила повторения дела"""
         if repeat_type == "week":
-            try:
-                weekday = int(repeat_value)
-            except (TypeError, ValueError):
-                weekday = 1
-            return f"каждую неделю по {self.WEEKDAYS_RU_DAT.get(weekday, '')}"
+            days = [self.WEEKDAYS_RU_DAT[day] for day in normalize_weekdays(repeat_value)]
+            description = ", ".join(days[:-1]) + " и " + days[-1] if len(days) > 1 else days[0]
+            return f"каждую неделю по {description}"
         elif repeat_type == "month":
             try:
                 day = int(repeat_value)
@@ -770,7 +769,7 @@ class Utils2:
         )
         menu = ft.PopupMenuButton(
             icon=ft.Icons.MORE_VERT, icon_color=self.libs.colors["MutedColor"],
-            tooltip="Действия с повторяющимся делом", items=[delete, edit, toggle],
+            tooltip="Действия с повторяющимся делом", items=[edit, delete, toggle],
         )
 
         display_task_name = self.back.auto_add_new_string(task_name)
@@ -778,13 +777,13 @@ class Utils2:
                 [
                     ft.Column(
                         [
-                            self.libs.linked_text(
+                            self.libs.collapsible_task_text(self.libs.linked_text(
                                 display_task_name,
                                 no_wrap=False,
                                 size=self.libs.text_size(16),
                                 weight=ft.FontWeight.W_500,
                                 color=self.TxtColor,
-                            ),
+                            ), metadata.get("collapse", False)),
                             ft.Text(
                                 f"{interval_text} - {group_name}",
                                 size=self.libs.text_size(12),
@@ -867,13 +866,13 @@ class Utils2:
             [
                 ft.Column(
                     [
-                        self.libs.linked_text(
+                        self.libs.collapsible_task_text(self.libs.linked_text(
                             display_task_name,
                             no_wrap=False,
                             size=self.libs.text_size(16),
                             weight=ft.FontWeight.W_500,
                             color=self.TxtColor,
-                        ),
+                        ), metadata.get("collapse", False)),
                         ft.Text(
                             f"Появится: {planned_date} - {group_name}",
                             size=self.libs.text_size(12),

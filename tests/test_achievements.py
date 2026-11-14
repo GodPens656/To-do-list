@@ -108,6 +108,78 @@ class AchievementStorageTests(unittest.TestCase):
         self.assertEqual(self.back.get_achievements()["points"], 20)
         self.assertEqual(self.back.get_achievements()["today_count"], 2)
 
+    def test_reset_preserves_tasks_and_only_future_completions_count(self):
+        first = self.complete(day=self.today - timedelta(days=2))
+        second = self.complete(day=self.today - timedelta(days=1))
+        deleted = self.complete()
+        self.back.kill_taskB(deleted)
+        notes = self.back.create_group("Заметки", group_type="notes")
+        self.back.save_note(notes, "Сохранить запись")
+        before = self.back._load()
+        callback = self.back.on_achievements_change = Mock()
+
+        self.back.reset_achievements()
+        progress = self.back.get_achievements()
+        for key in ("points", "completed_tasks", "current_streak", "best_streak", "unlocked_count"):
+            self.assertEqual(progress[key], 0)
+        self.assertFalse(progress["completed_today"])
+        self.assertTrue(all(not day["completed"] for day in progress["week"]))
+        self.assertTrue(all(not award["unlocked"] for award in progress["awards"]))
+        for key in before.keys() - {"achievements"}:
+            self.assertEqual(self.back._load()[key], before[key])
+        self.assertFalse(self.back.undo_last_action())
+        callback.assert_called_once()
+        self.assertEqual(callback.call_args.args[1]["points"], 0)
+
+        self.back.redact_statusB(first, True)
+        self.back.redact_taskB(second, "Переименовано после сброса")
+        self.assertEqual(self.back.get_achievements()["points"], 0)
+        self.back.kill_taskB(second)
+        self.assertTrue(self.back.undo_last_action())
+        self.assertEqual(self.back.get_achievements()["points"], 0)
+        self.complete("Новое выполненное дело")
+        self.assertEqual(self.back.get_achievements()["points"], 10)
+        self.back.redact_statusB(first, False)
+        self.assertEqual(self.back.get_achievements()["points"], 10)
+        self.back.redact_statusB(first, True)
+        self.assertEqual(self.back.get_achievements()["points"], 20)
+        self.assertEqual(self.back.get_achievements()["current_streak"], 1)
+
+    def test_reset_persists_on_restart_and_archive_transfer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            back = Backend.__new__(Backend)
+            back.web, back.page, back.data_dir = False, self.page, Path(directory)
+            task_id = back.saveB("Завершённое дело")
+            back.redact_statusB(task_id, True)
+            original_tasks = (back.data_dir / "tasks.json").read_bytes()
+            back.reset_achievements()
+            self.assertEqual((back.data_dir / "tasks.json").read_bytes(), original_tasks)
+            self.assertTrue(is_encrypted((back.data_dir / "achievements.json").read_bytes()))
+
+            reopened = Backend.__new__(Backend)
+            reopened.web, reopened.page, reopened.data_dir = False, self.page, back.data_dir
+            self.assertEqual(reopened.get_achievements()["points"], 0)
+            self.back.import_data_archive(reopened.export_data_archive())
+            self.assertEqual(self.back.get_achievements()["points"], 0)
+            self.assertTrue(self.back.get_task(task_id)["status"])
+            other_store = WebSessionStore(self.page)
+            other_store.replace_from_cloud(self.back._load())
+            other = Backend(page=self.page, web_store=other_store, cloud=Mock())
+            self.assertEqual(other.get_achievements()["points"], 0)
+            other.redact_taskB(task_id, "Новое название")
+            self.assertEqual(other.get_achievements()["points"], 0)
+
+    def test_failed_reset_keeps_progress_and_undo(self):
+        self.complete()
+        before = self.back._load()
+        callback = self.back.on_achievements_change = Mock()
+        with patch.object(self.store, "save_all_sections", side_effect=OSError("Disk full")):
+            with self.assertRaises(OSError):
+                self.back.reset_achievements()
+        self.assertEqual(self.back._load(), before)
+        self.assertTrue(self.back.can_undo())
+        callback.assert_not_called()
+
     def test_native_restart_keeps_encrypted_progress_and_upgrade_preserves_existing_files(self):
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
@@ -176,6 +248,62 @@ class AchievementStorageTests(unittest.TestCase):
 
 
 class AchievementUITests(unittest.TestCase):
+    def test_reset_confirmation_cancel_and_live_refresh(self):
+        for phone in (False, True):
+            with self.subTest(phone=phone):
+                front = make_front(phone=phone)
+                front._update_control = Mock()
+                task_id = front.back.saveB("Завершённое дело")
+                front.back.redact_statusB(task_id, True)
+                front.open_settings()
+                settings_screen = front.screen_stack[-1]
+                front.open_achievements()
+                screen = front.screen_stack[-1]
+                view = front.achievements_view
+                front.cloud.alg_for_redact.reset_mock()
+                before = front.back._load()
+
+                view.reset_button.on_click(None)
+                dialog = front.page.show_dialog.call_args.args[0]
+                self.assertIsInstance(dialog, ft.AlertDialog)
+                self.assertTrue(dialog.modal)
+                self.assertEqual(front.back._load(), before)
+                dialog.actions[0].on_click(None)
+                self.assertEqual(front.back._load(), before)
+                front.cloud.alg_for_redact.assert_not_called()
+
+                view.reset_button.on_click(None)
+                front.page.show_dialog.call_args.args[0].actions[-1].on_click(None)
+                self.assertEqual(view.progress["points"], 0)
+                self.assertEqual(view.progress["unlocked_count"], 0)
+                self.assertEqual(front.back.get_achievements()["points"], 0)
+                self.assertTrue(front.back.get_task(task_id)["status"])
+                self.assertIs(front.screen_stack[-1], screen)
+                front._update_control.assert_called_with(view.content)
+                front.cloud.alg_for_redact.assert_called_once()
+                view.back.on_click(None)
+                self.assertIs(front.screen_stack[-1], settings_screen)
+                front.open_achievements()
+                self.assertEqual(front.achievements_view.progress["points"], 0)
+
+    def test_failed_reset_keeps_displayed_progress_and_reports_error(self):
+        front = make_front()
+        front._update_control = Mock()
+        task_id = front.back.saveB("Завершённое дело")
+        front.back.redact_statusB(task_id, True)
+        front.open_achievements()
+        view = front.achievements_view
+        view.reset_button.on_click(None)
+        dialog = front.page.show_dialog.call_args.args[0]
+        front.cloud.alg_for_redact.reset_mock()
+        with patch.object(front.back, "reset_achievements", side_effect=OSError("Disk full")):
+            dialog.actions[-1].on_click(None)
+        self.assertEqual(view.progress["points"], 10)
+        self.assertEqual(front.back.get_achievements()["points"], 10)
+        front.cloud.alg_for_redact.assert_not_called()
+        error = front.page.show_dialog.call_args.args[0]
+        self.assertIn("Не удалось сохранить", error.content.value)
+
     def test_settings_navigation_fresh_progress_and_back_on_desktop_and_phone(self):
         for phone in (False, True):
             with self.subTest(phone=phone):

@@ -194,7 +194,11 @@ class DataArchiveUiTests(unittest.IsolatedAsyncioTestCase):
                 front.render_daily_repeat_tasks()
                 front.open_settings()
                 controls = front.utils2.build_widgets_for_data_archive(front.render_daily_repeat_tasks)
-                front.page.show_dialog.side_effect = lambda dialog: asyncio.create_task(dialog.actions[1].on_click(None))
+                def confirm(dialog):
+                    if isinstance(dialog, ft.AlertDialog):
+                        asyncio.create_task(dialog.actions[1].on_click(None))
+
+                front.page.show_dialog.side_effect = confirm
                 await controls[0].on_click(None)
                 self.assertEqual([task['name'] for task in front.back.read_tasks()], ['Новое дело'])
                 self.assertNotEqual(front.current_group_id, old_group)

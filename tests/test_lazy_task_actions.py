@@ -154,9 +154,13 @@ def test_metadata_updates_form_visibility_and_only_invalid_field():
     front._update_control = Mock()
     dialog = front.libs.widgets_for_ask_task('Текст', 'Сохранить', 'Дело')
     values = front._add_task_metadata_controls(dialog, deadline_as_days=True)
-    controls = dialog['Main Cont'].content.controls
-    selector = next(control for control in controls if isinstance(control, ft.Dropdown)
-                    and control.label is None)
+    section = dialog['Main Cont'].content.controls[-3]
+    tile = section if isinstance(section, ft.ExpansionTile) else section.content
+    controls = tile.controls[0].controls
+    selector = next(control.controls[0] for control in controls
+                    if isinstance(control, ft.Row)
+                    and isinstance(control.controls[0], ft.Dropdown)
+                    and control.controls[0].label is None)
     field = next(control for control in controls if isinstance(control, ft.TextField)
                  and control.label == 'Дедлайн через (дней)')
     selector.value = 'deadline'

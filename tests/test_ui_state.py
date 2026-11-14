@@ -93,10 +93,11 @@ class TaskPresentationTests(unittest.TestCase):
                     self.assertEqual(focus.await_count, 2)
 
     def test_desktop_search_does_not_add_expanded_to_wrapping_toolbar(self):
-        toolbar = self.front.btns_cont.content
+        front = make_front(settings={"action_panel_position": "top"})
+        toolbar = front.btns_cont.content
         self.assertTrue(toolbar.wrap)
-        self.assertIn(self.front.search_field, toolbar.controls)
-        self.assertGreater(self.front.search_field.width, 0)
+        self.assertIn(front.search_field, toolbar.controls)
+        self.assertGreater(front.search_field.width, 0)
         # Even expand=False becomes Expanded(flex=0), invalid inside Flutter Wrap.
         for control in toolbar.controls:
             self.assertIsNone(control.expand)

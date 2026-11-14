@@ -8,9 +8,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .cloud import Cloud
 from .storage import load_all_sections, save_all_sections, empty_data, ensure_split_storage, STORAGE_LOCK
 from .json_migration import migrate_legacy_storage
-from .validation import MAX_GROUP_NAME_LENGTH, text_length_error
+from .validation import MAX_GROUP_NAME_LENGTH, should_collapse_task, text_length_error
 from .attachments import validate_account_quota
-from .achievements import achievement_summary, update_completion_history
+from .achievements import achievement_summary, completion_history, update_completion_history
 from .data_archive import create_data_archive, read_data_archive
 from .storage import replace_all_sections
 from .ordering import OrderingMixin
@@ -53,13 +53,14 @@ class Backend(OrderingMixin):
         self._undo_state = None
         self.on_undo_change = None
         self.on_data_change = None
+        self.on_achievements_change = None
         # web_store не None -> сайт, page.web is True: данные каждого
         # посетителя хранятся у него в браузере (см. Backend/webstorage.py),
         # а не в файлах на сервере.
         self.web = web_store is not None
         self.Save_in_time = ""
         self.phone = False
-        self.version = '3.14.0'
+        self.version = '3.15.0'
         if self.web:
             self.store = web_store
             self.cloud = cloud or Cloud(web_store=web_store)
@@ -123,6 +124,7 @@ class Backend(OrderingMixin):
                 save_all_sections(self.data_dir, data)
             self._undo_state = (deepcopy(previous), deepcopy(data)) if undoable else None
         self._notify_undo_change()
+        self._notify_achievements_change(previous, data)
 
         callback = getattr(self, 'on_data_change', None)
         if callback:
@@ -137,13 +139,15 @@ class Backend(OrderingMixin):
 
     def import_data_archive(self, content):
         data = read_data_archive(content)
+        previous = self._load()
         if self.is_authenticated():
-            validate_account_quota(self._load(), data)
+            validate_account_quota(previous, data)
         if self.web:
             self.store.save_all_sections(data)
         else:
             replace_all_sections(self.data_dir, data)
         self.clear_undo()
+        self._notify_achievements_change(previous, data)
         callback = getattr(self, "on_data_change", None)
         if callback:
             callback()
@@ -199,6 +203,24 @@ class Backend(OrderingMixin):
             self._load(copy_data=False), local_today(self.web, getattr(self, "page", None)),
         )
 
+    def reset_achievements(self):
+        """Clear progress without importing existing completed tasks again."""
+        with (self.store.data_lock() if self.web else STORAGE_LOCK):
+            data = self._load()
+            data["achievements"] = [
+                {"task_id": task["id"], "date": None, "excluded": True}
+                for task in data["tasks"]
+                if task.get("status") and isinstance(task.get("id"), str)
+            ]
+            self._save(data, undoable=False)
+
+    def _notify_achievements_change(self, previous, current):
+        callback = getattr(self, "on_achievements_change", None)
+        if callback is None or completion_history(previous) == completion_history(current):
+            return
+        today = local_today(self.web, getattr(self, "page", None))
+        callback(achievement_summary(previous, today), achievement_summary(current, today))
+
     def read_tasks(self):
         """Возвращает обычные дела в виде списка словарей
         {id, name, status, group, is_repeat, created_date}.
@@ -210,7 +232,8 @@ class Backend(OrderingMixin):
         return tasks
 
     def saveB(self, name, group_id='default', is_repeat=False, created_date=None,
-              deadline=None, priority='Неважно', info_type='created_date', attachments=None):
+              deadline=None, priority='Неважно', info_type='created_date', attachments=None,
+              collapse=False):
         """Сохраняет дело. is_repeat=True помечает дело как автоматически
         добавленное из ежедневного (повторяющегося) правила — это позволяет
         фронтенду отрисовывать такие дела отдельным блоком, отделённым
@@ -218,6 +241,7 @@ class Backend(OrderingMixin):
         дела (по умолчанию — сегодняшняя дата в формате ДД-ММ-ГГГГ)."""
         if text_length_error(name):
             return False
+        collapse = should_collapse_task(name, collapse)
         name = name.replace('\n', '{N}')
         data = self._load()
         created_date = created_date or local_today(self.web, self.page).strftime('%d-%m-%Y')
@@ -232,6 +256,7 @@ class Backend(OrderingMixin):
             "priority": priority or "Неважно",
             "info_type": info_type or "created_date",
             "attachments": deepcopy(attachments or []),
+            "collapse": collapse,
         })
         self._save(data, undoable=not is_repeat)
         return data["tasks"][-1]["id"]
@@ -260,6 +285,7 @@ class Backend(OrderingMixin):
     def redact_taskB(self, id_task, new_name, metadata=None):
         if text_length_error(new_name):
             return False
+        collapse_by_length = should_collapse_task(new_name)
         new_name = new_name.replace('\n', '{N}')
         data = self._load()
         for task in data["tasks"]:
@@ -267,6 +293,7 @@ class Backend(OrderingMixin):
                 task["name"] = new_name
                 if metadata is not None:
                     task.update(metadata)
+                task["collapse"] = bool(collapse_by_length or task.get("collapse", False))
         self._save(data)
 
     def auto_add_new_string(self, text):
@@ -314,11 +341,14 @@ class Backend(OrderingMixin):
         return ''
 
     def delete_all(self):
+        previous = self._load()
         self.clear_undo()
+        data = empty_data()
         if self.web:
-            self.store.save_all_sections(empty_data())
+            self.store.save_all_sections(data)
         else:
-            save_all_sections(self.data_dir, empty_data(), force=True)
+            save_all_sections(self.data_dir, data, force=True)
+        self._notify_achievements_change(previous, data)
         self.cloud.del_all()
 
     def get_groups(self):
@@ -486,7 +516,7 @@ class Backend(OrderingMixin):
                 return deepcopy(group.get('notes', []))
         return []
 
-    def save_note(self, group_id, text, note_id=None, *, attachments=None):
+    def save_note(self, group_id, text, note_id=None, *, attachments=None, collapse=None):
         if not text or not text.strip() or text_length_error(text):
             return None
         data = self._load()
@@ -509,6 +539,9 @@ class Backend(OrderingMixin):
                 note['text'] = text
                 if attachments is not None:
                     note['attachments'] = deepcopy(attachments)
+            note['collapse'] = should_collapse_task(
+                text, note.get('collapse', False) if collapse is None else collapse,
+            )
             self._save(data)
             return note_id
         return None

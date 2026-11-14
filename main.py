@@ -30,7 +30,9 @@ async def main(page: ft.Page):
         # как и раньше, а фактическая запись обратно в браузер идёт в фоне.
         web_store = WebSessionStore(page)
         await web_store.load()
-    Front(page, web_store)
+    front = Front(page, web_store)
+    if page.web and not front.phone:
+        await page.browser_context_menu.disable()
 
 if __name__ == "__main__":
     import os as _os

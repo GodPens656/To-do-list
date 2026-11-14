@@ -22,6 +22,18 @@ def parse_date(value):
         return None
 
 
+def normalize_weekdays(value):
+    """Read both legacy single weekdays and lists of selected weekdays."""
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    weekdays = set()
+    for item in values:
+        try:
+            weekdays.add(max(1, min(7, int(item))))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return sorted(weekdays) or [1]
+
+
 def repeat_dates(item, start, end, today):
     """Project a normalized rule, preserving the daily generator's cadence.
 
@@ -33,12 +45,13 @@ def repeat_dates(item, start, end, today):
     if created:
         start = max(start, created)
     kind, value = item["repeat_type"], item["repeat_value"]
+    weekdays = normalize_weekdays(value) if kind == "week" else []
     if kind == "day":
         next_due = max(today, anchor + timedelta(days=value))
     current = start
     while current <= end:
         if kind == "week":
-            due = current.isoweekday() == value
+            due = current.isoweekday() in weekdays
         elif kind == "month":
             due = current.day == value
         elif kind == "year":

@@ -1,5 +1,6 @@
-"""The achievements screen, rebuilt from current progress on every opening."""
+"""The achievements screen and queued progress notifications."""
 
+from collections import deque
 from datetime import date
 
 import flet as ft
@@ -7,15 +8,92 @@ import flet as ft
 from Backend.achievements import POINTS_PER_TASK
 
 
+class AchievementNotifications:
+    """Let each snackbar finish so rapid completions do not hide earned awards."""
+
+    def __init__(self, front):
+        self.front = front
+        self.pending = deque()
+        self.active = None
+
+    def show(self, previous, current):
+        snackbar = _achievement_notification(self.front.page, self.front.libs, previous, current)
+        if snackbar is not None:
+            self.pending.append(snackbar)
+            self._show_next()
+
+    def _show_next(self):
+        if self.active is not None or not self.pending:
+            return
+        self.active = self.pending.popleft()
+        self.active.on_dismiss = lambda _, snackbar=self.active: self._dismissed(snackbar)
+        self.front.page.show_dialog(self.active)
+
+    def _dismissed(self, snackbar):
+        if self.active is not snackbar:
+            return
+        self.active = None
+        self._show_next()
+
+    def clear(self):
+        self.pending.clear()
+        active, self.active = self.active, None
+        if active is not None:
+            active.open = False
+            self.front._update_control(active)
+
+
+def _achievement_notification(page, libs, previous, current):
+    """Combine points and all awards unlocked by the same change."""
+    earned = {award["id"] for award in previous["awards"] if award["unlocked"]}
+    unlocked = [award for award in current["awards"]
+                if award["unlocked"] and award["id"] not in earned]
+    delta = current["points"] - previous["points"]
+    if not delta and not unlocked:
+        return
+
+    colors = libs.colors
+    lines = [ft.Text(
+        f"Достижение получено: «{award['title']}»",
+        size=libs.text_size(14), color=colors["TxtColor"], weight=ft.FontWeight.W_600,
+    ) for award in unlocked]
+    if delta:
+        lines.append(ft.Text(
+            f"{delta:+d} баллов · Всего: {current['points']}",
+            size=libs.text_size(14), color=colors["TxtColor"],
+        ))
+    return ft.SnackBar(
+        content=ft.Row([
+            ft.Icon(ft.Icons.EMOJI_EVENTS_ROUNDED if unlocked else ft.Icons.STARS_ROUNDED,
+                    color=colors["WarnTextColor"] if unlocked else colors["TxtColor"], size=26),
+            ft.Column(lines, spacing=4, tight=True, expand=True),
+        ], spacing=12),
+        behavior=ft.SnackBarBehavior.FLOATING,
+        bgcolor=colors["ContBgColor"],
+        shape=ft.RoundedRectangleBorder(radius=16, side=ft.BorderSide(1, colors["SoftBorderColor"])),
+        width=None if libs.phone else min(520, max(240, float(page.width or 600) - 32)),
+        margin=ft.Margin.only(left=12, right=12, bottom=16) if libs.phone else None,
+        padding=ft.Padding.symmetric(horizontal=16, vertical=14),
+        show_close_icon=True, close_icon_color=colors["TxtColor"],
+        duration=6000 if unlocked else 3500, persist=False,
+    )
+
+
 class AchievementsView:
     def __init__(self, front):
+        self.front = front
         self.libs = front.utils2.libs
         self.colors = self.libs.colors
         self.accent = "#FFAB66" if self.libs.icon_theme == "dark" else "#AD4500"
         self.progress = front.back.get_achievements()
         self.header = self.libs.create_style_header("Достижения")
         self.back = self.libs.create_style_button("Назад")
-        self.content = self.libs.create_style_cont([
+        self.reset_button = self.libs.create_style_button("Сбросить достижения", ft.Icons.RESTART_ALT)
+        self.reset_button.on_click = self._confirm_reset
+        self.content = self.libs.create_style_cont(self._build_controls(), framed=True)
+
+    def _build_controls(self):
+        return [
             self._streak_card(),
             ft.Row([
                 self._stat(ft.Icons.STARS_ROUNDED, str(self.progress["points"]), "Баллы"),
@@ -41,8 +119,46 @@ class AchievementsView:
                 "Ранее выполненные дела дают баллы, но не дни серии: их дата выполнения неизвестна.",
                 muted=True, size=12,
             ),
+            self.reset_button,
             self.back,
-        ], framed=True)
+        ]
+
+    def _confirm_reset(self, _):
+        page = self.front.page
+
+        def cancel(_):
+            page.pop_dialog()
+
+        def reset(_):
+            page.pop_dialog()
+            try:
+                self.front.back.reset_achievements()
+            except (OSError, ValueError, RuntimeError):
+                self.libs.open_dialog(
+                    "Сброс достижений", "Не удалось сохранить сброс. Попробуйте ещё раз.", page,
+                )
+                return
+            notifications = getattr(self.front, "_achievement_notifications", None)
+            if notifications is not None:
+                notifications.clear()
+            self.front.cloud.alg_for_redact()
+            self.progress = self.front.back.get_achievements()
+            self.content.content.controls = self._build_controls()
+            self.front._update_control(self.content)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=self.libs.create_dialog_title("Сбросить достижения?"),
+            content=ft.Text(
+                "Баллы, награды, серия дней и рекорд будут обнулены. "
+                "Дела и отметки выполнения сохранятся. Сброс нельзя отменить.",
+                width=400,
+            ),
+            actions=[ft.TextButton("Отмена", on_click=cancel),
+                     ft.TextButton("Сбросить", on_click=reset)],
+            bgcolor=self.colors["ContBgColor"],
+        )
+        page.show_dialog(self.libs.prepare(dialog))
 
     def _text(self, value, *, size=14, muted=False, bold=False, **kwargs):
         return ft.Text(

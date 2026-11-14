@@ -15,6 +15,10 @@ class NotesMixin:
         entry.hint_text = ""
         entry.value = note['text'] if note else ''
         self.libs.update_text_counter(entry)
+        collapse_note = self.libs.add_task_collapse_control(
+            dialog, note.get('collapse', False) if note else False,
+            label="Сворачивать ли заметку",
+        )
         entry.min_lines = 1
         entry.max_lines = 12
         # Enter всегда вставляет перенос; сохранение — отдельной кнопкой.
@@ -34,6 +38,7 @@ class NotesMixin:
             saved = self.back.save_note(
                 group_id, entry.value, note['id'] if note else None,
                 attachments=attachments.values(),
+                collapse=collapse_note.value,
             )
             if saved is None:
                 entry.error = "Введите текст заметки"
@@ -79,6 +84,7 @@ class NotesMixin:
                 group_settings=group_settings,
                 attachments=note.get('attachments'),
                 on_copy=copy_note_text,
+                collapse=note.get('collapse', False),
             )
             card.data = note['text']
             card.key = note['id']

@@ -93,7 +93,7 @@ class Utils:
     def create_row_with_task(self, task, status, id_task, created_date=None, group_id='default',
                              deadline=None, priority='Неважно', info_type='created_date',
                              *, show_checkbox=True, group_settings=None, attachments=None,
-                             on_copy=None, on_repeat=None):
+                             on_copy=None, on_repeat=None, collapse=False):
         """Функция для создания и возвращения строки с делом, кнопками и т.д.
         created_date — дата создания дела (ДД-ММ-ГГГГ), отображается
         мелкой подписью под названием дела, если известна и если включена
@@ -154,14 +154,15 @@ class Utils:
             ))
         if attachments and not self.phone:
             details.append(attachment_controls(self.libs, attachments))
+        task_text = self.libs.collapsible_task_text(taskW, collapse)
         if details:
             task_content = ft.Column(
-                controls=[taskW, *details],
+                controls=[task_text, *details],
                 spacing=3 if self.phone else 6,
                 tight=True,
             )
         else:
-            task_content = taskW
+            task_content = task_text
 
         """Buttons"""
         checkbox = None
@@ -342,7 +343,8 @@ class Utils:
 
         main = self.libs.create_style_cont(
             widgets_4_main,
-            width=self.width_dialogs*0.9
+            width=self.width_dialogs*0.9,
+            framed=True,
         )
 
         return main
@@ -400,6 +402,7 @@ class Utils:
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             )],
             padding=ft.Padding.symmetric(horizontal=20, vertical=16),
+            framed=True,
         )
 
     def build_widgets_for_login(self, page, function_for_update, login_cmd):
@@ -487,7 +490,8 @@ class Utils:
             ft.Icons.ACCOUNT_CIRCLE_ROUNDED,
             'Авторизованные аккаунты',
             [self.cont_auth_accounts(login_cmd)],
-            padding=4
+            padding=4,
+            framed=True,
         )
 
         cont_main = self.libs.create_style_cont(
@@ -506,7 +510,8 @@ class Utils:
                     LlblP,
                     cont_with_account,
                     btn_cancel,
-                ]
+                ],
+                framed=True,
         )
         itog = {
             "Main_cont": cont_main,

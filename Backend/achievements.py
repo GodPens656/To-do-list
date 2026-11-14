@@ -29,8 +29,8 @@ def _count_word(number, forms):
     return forms[0] if ending == 1 else forms[1] if 2 <= ending <= 4 else forms[2]
 
 
-def completion_history(data):
-    """Import older completed tasks without inventing their completion dates."""
+def completion_history(data, *, include_excluded=False):
+    """Import legacy completions while keeping reset tasks from earning twice."""
     records = {}
     for item in data.get("achievements", []):
         if not isinstance(item, dict) or not isinstance(item.get("task_id"), str):
@@ -40,13 +40,17 @@ def completion_history(data):
             completed_on = date.fromisoformat(completed_on).isoformat()
         except (TypeError, ValueError):
             completed_on = None
-        records.setdefault(item["task_id"], {
+        record = {
             "task_id": item["task_id"], "date": completed_on,
-        })
+        }
+        if item.get("excluded") is True:
+            record["excluded"] = True
+        records.setdefault(item["task_id"], record)
     for task in data.get("tasks", []):
         if task.get("status") and isinstance(task.get("id"), str):
             records.setdefault(task["id"], {"task_id": task["id"], "date": None})
-    return list(records.values())
+    return [item for item in records.values()
+            if include_excluded or not item.get("excluded", False)]
 
 
 def update_completion_history(previous, proposed, today):
@@ -55,7 +59,7 @@ def update_completion_history(previous, proposed, today):
     Deleting tasks preserves their history. Undo restores the entire snapshot,
     including this section, and must bypass this function.
     """
-    records = {item["task_id"]: item for item in completion_history(previous)}
+    records = {item["task_id"]: item for item in completion_history(previous, include_excluded=True)}
     old_tasks = {task.get("id"): task for task in previous.get("tasks", [])}
     for task in proposed.get("tasks", []):
         task_id = task.get("id")

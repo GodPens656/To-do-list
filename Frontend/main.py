@@ -55,6 +55,7 @@ class MainWidgets(Utils3):
                 self.open_note_editor()
                 return
             self.entry_task.value = ""
+            self.collapse_task.value = False
             self.libs.update_text_counter(self.entry_task)
             extra_info_dropdown.value = "created_date"
             deadline_field.value = ""
@@ -125,6 +126,10 @@ class MainWidgets(Utils3):
         self.upd_btn.on_click = self.update_and_show_groups
 
         progress_width = float("inf") if self.libs.glass_mobile else None
+        # Keep the indicator inside the capsule's curved lower corners.
+        progress_inset = (20 if self.phone and self.libs.glass_toolbar
+                          and self.action_panel_position in {"top", "bottom"} else 0)
+        progress_padding = ft.Padding.only(left=progress_inset, top=8, right=progress_inset)
         if self.phone:
             self.upload_progress = ft.ProgressBar(
                 visible=False,
@@ -144,7 +149,7 @@ class MainWidgets(Utils3):
         self.upload_progress_cont = ft.Container(
             content=self.upload_progress,
             width=progress_width,
-            padding=ft.Padding.only(top=8),
+            padding=progress_padding,
             visible=False,
         )
         self.groups_progress = ft.ProgressBar(
@@ -158,7 +163,7 @@ class MainWidgets(Utils3):
         self.groups_progress_cont = ft.Container(
             content=self.groups_progress,
             width=progress_width,
-            padding=ft.Padding.only(top=8),
+            padding=progress_padding,
             visible=False,
         )
         self.cloud.set_upload_state_callback(self._set_upload_indicator)
@@ -236,6 +241,7 @@ class MainWidgets(Utils3):
         widgets = self.libs.widgets_for_ask_task(
             "Введите название дела", "Добавить дело", "Новое дело"
         )
+        self.collapse_task = self.libs.add_task_collapse_control(widgets)
 
         extra_info_label = ft.Text(
             "Выберите дополнительную информацию о деле",
@@ -243,14 +249,13 @@ class MainWidgets(Utils3):
             weight=ft.FontWeight.W_500,
             color=self.TxtColor,
         )
-        extra_info_dropdown = ft.Dropdown(
+        extra_info_dropdown = self.libs.create_task_dropdown(
             value="created_date",
             options=[
                 ft.dropdown.Option(key="created_date", text="Дата создания дела"),
                 ft.dropdown.Option(key="deadline", text="Дедлайн дела"),
                 ft.dropdown.Option(key="priority", text="Важность дела"),
             ],
-            width=self.libs.width_dialogs * 0.95,
         )
         deadline_field = ft.TextField(
             label="Дедлайн дела",
@@ -263,16 +268,16 @@ class MainWidgets(Utils3):
             "Выбрать дату", ft.Icons.CALENDAR_MONTH
         )
         deadline_button.visible = False
-        priority_dropdown = ft.Dropdown(
+        priority_dropdown = self.libs.create_task_dropdown(
             label="Важность дела",
             value="Неважно",
             options=[
                 ft.dropdown.Option(key=value, text=value)
                 for value in ("Неважно", "Важно", "Очень важно")
             ],
-            width=self.libs.width_dialogs * 0.95,
             visible=False,
         )
+        priority_row = ft.Row([priority_dropdown], visible=False)
 
         def set_date_field(field):
             def on_change(event):
@@ -297,15 +302,16 @@ class MainWidgets(Utils3):
             deadline_field.visible = selected == "deadline"
             deadline_button.visible = selected == "deadline"
             priority_dropdown.visible = selected == "priority"
+            priority_row.visible = priority_dropdown.visible
             self.page.update()
 
         extra_info_dropdown.on_select = update_extra_controls
         form_controls = widgets["Main Cont"].content.controls
-        form_controls[-1:-1] = [
-            extra_info_label, extra_info_dropdown, deadline_field, deadline_button, priority_dropdown
-        ]
         attachments = AttachmentEditor(self.libs, back=self.back)
-        form_controls.insert(-1, attachments.control)
+        form_controls[-1:-1] = self.libs.create_task_form_sections(
+            [extra_info_label, ft.Row([extra_info_dropdown]), deadline_field, deadline_button, priority_row],
+            attachments.control,
+        )
 
         self.create_task = widgets["btn_create_task"]
         self.create_task.on_click = lambda e: self.add_task(
@@ -314,6 +320,7 @@ class MainWidgets(Utils3):
             priority=priority_dropdown.value if extra_info_dropdown.value == "priority" else "Неважно",
             info_type=extra_info_dropdown.value,
             attachments=attachments.values(),
+            collapse=self.collapse_task.value,
         )
         self.cancel = widgets["cancel"]
         self.cancel.on_click = self.close_dlg

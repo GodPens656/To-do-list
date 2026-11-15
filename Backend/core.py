@@ -233,7 +233,7 @@ class Backend(OrderingMixin):
 
     def saveB(self, name, group_id='default', is_repeat=False, created_date=None,
               deadline=None, priority='Неважно', info_type='created_date', attachments=None,
-              collapse=False):
+              collapse=False, reminder=False):
         """Сохраняет дело. is_repeat=True помечает дело как автоматически
         добавленное из ежедневного (повторяющегося) правила — это позволяет
         фронтенду отрисовывать такие дела отдельным блоком, отделённым
@@ -257,6 +257,7 @@ class Backend(OrderingMixin):
             "info_type": info_type or "created_date",
             "attachments": deepcopy(attachments or []),
             "collapse": collapse,
+            "reminder": bool(reminder),
         })
         self._save(data, undoable=not is_repeat)
         return data["tasks"][-1]["id"]

@@ -56,6 +56,7 @@ class MainWidgets(Utils3):
                 return
             self.entry_task.value = ""
             self.collapse_task.value = False
+            reminder.value = False
             self.libs.update_text_counter(self.entry_task)
             extra_info_dropdown.value = "created_date"
             deadline_field.value = ""
@@ -242,6 +243,7 @@ class MainWidgets(Utils3):
             "Введите название дела", "Добавить дело", "Новое дело"
         )
         self.collapse_task = self.libs.add_task_collapse_control(widgets)
+        reminder = self.libs.task_reminder_checkbox()
 
         extra_info_label = ft.Text(
             "Выберите дополнительную информацию о деле",
@@ -309,7 +311,7 @@ class MainWidgets(Utils3):
         form_controls = widgets["Main Cont"].content.controls
         attachments = AttachmentEditor(self.libs, back=self.back)
         form_controls[-1:-1] = self.libs.create_task_form_sections(
-            [extra_info_label, ft.Row([extra_info_dropdown]), deadline_field, deadline_button, priority_row],
+            [reminder, extra_info_label, ft.Row([extra_info_dropdown]), deadline_field, deadline_button, priority_row],
             attachments.control,
         )
 
@@ -321,6 +323,7 @@ class MainWidgets(Utils3):
             info_type=extra_info_dropdown.value,
             attachments=attachments.values(),
             collapse=self.collapse_task.value,
+            reminder=reminder.value,
         )
         self.cancel = widgets["cancel"]
         self.cancel.on_click = self.close_dlg

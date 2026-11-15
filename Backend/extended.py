@@ -752,6 +752,7 @@ class Backend2:
             "repeat_value": repeat_value,
             "disabled": False,
             "collapse": collapse,
+            "reminder": bool(metadata.get("reminder", False)),
             "group": group_id,
             "created_date": metadata.get("created_date") or today_str,
             "deadline": metadata.get("deadline") or "",
@@ -836,6 +837,7 @@ class Backend2:
                 metadata = {
                     "created_date": item.get("created_date") or today_str,
                     "collapse": bool(item.get("collapse", False)),
+                    "reminder": bool(item.get("reminder", False)),
                     "deadline": self._generated_deadline(item, today),
                     "deadline_days": item.get("deadline_days") or "",
                     "priority": item.get("priority") or "Неважно",
@@ -882,6 +884,7 @@ class Backend2:
             metadata = {
                 "created_date": item.get("created_date") or item.get("last_date") or today_str,
                 "collapse": bool(item.get("collapse", False)),
+                "reminder": bool(item.get("reminder", False)),
                 "deadline": item.get("deadline") or "",
                 "deadline_days": item.get("deadline_days") or "",
                 "priority": item.get("priority") or "Неважно",
@@ -961,6 +964,7 @@ class Backend2:
             "name": task,
             "date": normal_date.strftime("%d-%m-%Y"),
             "collapse": collapse,
+            "reminder": bool(metadata.get("reminder", False)),
             "group": group_id,
             "created_date": metadata.get("created_date") or today_str,
             "deadline": metadata.get("deadline") or "",
@@ -988,6 +992,7 @@ class Backend2:
             metadata = {
                 "created_date": item.get("created_date") or today_str,
                 "collapse": bool(item.get("collapse", False)),
+                "reminder": bool(item.get("reminder", False)),
                 "deadline": item.get("deadline") or "",
                 "deadline_days": item.get("deadline_days") or "",
                 "priority": item.get("priority") or "Неважно",
@@ -1056,6 +1061,7 @@ class Backend2:
                 metadata = {
                     "created_date": item.get("created_date") or today.strftime('%d-%m-%Y'),
                     "collapse": bool(item.get("collapse", False)),
+                    "reminder": bool(item.get("reminder", False)),
                     "deadline": self._generated_deadline(item, today),
                     "deadline_days": item.get("deadline_days") or "",
                     "priority": item.get("priority") or "Неважно",

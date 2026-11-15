@@ -5,11 +5,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call, patch
 
+import flet as ft
+
 from Backend.core import Backend
 from Backend.extended import Backend2
 from Backend.notifications import NotificationService
 from Backend.webstorage import WebSessionStore
 from Frontend.settings import Utils2
+from test_glass import walk_controls
+from test_ui_state import make_front, task_menu
 
 
 NOW = datetime.datetime(2026, 10, 17, 12)
@@ -77,9 +81,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         self.settings["notification_deadline_enabled"] = False
         self.assertEqual(self.bodies(), ['Есть очень важные дела в группе "Работа"'])
         self.settings["notification_important_enabled"] = False
-        self.provider.reset_mock()
-        self.assertEqual(self.bodies(), [NotificationService.BODY])
-        self.provider.assert_not_called()
+        self.assertEqual(self.bodies(), [])
 
     def test_ignores_completed_lower_priorities_notes_and_missing_groups(self):
         self.add_task(status=True, priority="Очень важно", deadline="18-10-2026")
@@ -88,13 +90,13 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         self.add_task("deleted", priority="Очень важно", deadline="18-10-2026")
         self.data["repeat_tasks"] = [{"group": "work", "priority": "Очень важно"}]
         self.data["postponed"] = [{"group": "work", "deadline": "18-10-2026"}]
-        self.assertEqual(self.bodies(), [NotificationService.BODY])
+        self.assertEqual(self.bodies(), [])
 
     def test_deadline_is_tomorrow_only_and_invalid_dates_are_ignored(self):
         for deadline in (None, "", "invalid", "31-02-2026", "16-10-2026",
                          "17-10-2026", "19-10-2026"):
             self.add_task(deadline=deadline)
-        self.assertEqual(self.bodies(), [NotificationService.BODY])
+        self.assertEqual(self.bodies(), [])
         self.add_task(deadline="18-10-2026")
         self.assertEqual(self.bodies(), ['Скоро подойдёт дедлайн в делах группы "Работа"'])
         check_dt = datetime.datetime(2026, 12, 31, 23, 59)
@@ -109,16 +111,46 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         self.service._notify_desktop()
         self.assertEqual(self.service.show_desktop_notification.call_args_list, [
             call("To-do", 'Есть очень важные дела в группе "Работа"'),
-            call("To-do", NotificationService.BODY),
         ])
 
+    def test_only_current_opted_in_tasks_repeat_at_each_tick(self):
+        self.settings.update(notification_important_enabled=False, notification_deadline_enabled=False)
+        self.add_task(name="Позвонить{N}в банк", reminder=True)
+        self.add_task(name="Купить молоко", reminder=True)
+        self.add_task(name="Архив", reminder=True, status=True)
+        self.add_task(name="Старое дело")
+        self.add_task(name="Без напоминания", reminder=False)
+        self.data["repeat_tasks"] = [{"name": "Шаблон", "reminder": True}]
+        self.service._notify_desktop()
+        self.service._notify_desktop()
+        self.assertEqual(self.service.show_desktop_notification.call_args_list, [
+            call("To-do", "Не забывайте:\nПозвонить\nв банк"),
+            call("To-do", "Не забывайте:\nКупить молоко"),
+        ] * 2)
+        self.data["tasks"][0]["reminder"] = False
+        self.data["tasks"][1]["name"] = "Купить хлеб"
+        self.assertEqual(self.bodies(), ["Не забывайте:\nКупить хлеб"])
+        self.data["tasks"][1]["status"] = True
+        self.assertEqual(self.bodies(), [])
+
     def test_desktop_obeys_master_switch_and_quiet_hours(self):
+        self.add_task(name="Позвонить", reminder=True)
         self.settings["notifications_enabled"] = False
         self.service._notify_desktop()
         self.settings.update(notifications_enabled=True, notification_quiet_enabled=True,
                              notification_quiet_start="11:00", notification_quiet_end="13:00")
         self.service._notify_desktop()
         self.service.show_desktop_notification.assert_not_called()
+
+    def test_windows_balloon_fits_long_tasks_with_emoji(self):
+        body = "Не забывайте:\n" + "а" * 239 + "📆" * 100
+        with patch("Backend.notifications.sys.platform", "win32"), \
+                patch("Backend.notifications.plyer_notification") as notifier:
+            NotificationService.show_desktop_notification(self.service, "To-do", body)
+        actual = notifier.notify.call_args.kwargs["message"]
+        self.assertTrue(actual.endswith("…"))
+        self.assertTrue(body.startswith(actual[:-1]))
+        self.assertLessEqual(len(actual.encode("utf-16-le")), 510)
 
     def prepare_android(self, count=2):
         self.service.phone = True
@@ -151,21 +183,38 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_android_clears_obsolete_reminders_after_completion_or_disabling(self):
         self.prepare_android(count=1)
-        self.add_task(priority="Очень важно")
-        await self.service.refresh_android_schedule()
-        self.data["tasks"][0]["status"] = True
+        self.add_task(name="Позвонить", reminder=True)
         await self.service.refresh_android_schedule()
         self.assertEqual(self.service._schedule_android_notification.call_args.args[3],
-                         NotificationService.BODY)
+                         "Не забывайте:\nПозвонить")
         self.service._schedule_android_notification.reset_mock()
+        self.data["tasks"][0]["status"] = True
+        await self.service.refresh_android_schedule()
+        self.service._schedule_android_notification.assert_not_awaited()
         self.settings["notifications_enabled"] = False
         await self.service.refresh_android_schedule()
         self.assertEqual(self.service.notifications.cancel_all_notifications.await_count, 3)
         self.service._schedule_android_notification.assert_not_awaited()
         self.assertIsNone(self.service.last_scheduled_at)
 
+    async def test_android_refresh_preserves_next_tick_and_updates_edited_text(self):
+        self.prepare_android()
+        self.add_task(name="Старый текст", reminder=True)
+        await self.service.refresh_android_schedule()
+        self.service._schedule_android_notification.reset_mock()
+        with patch.object(FrozenDatetime, "now", return_value=NOW + datetime.timedelta(minutes=10)):
+            await self.service.refresh_android_schedule()
+            self.service._schedule_android_notification.assert_not_awaited()
+            self.data["tasks"][0]["name"] = "Новый текст"
+            await self.service.refresh_android_schedule()
+        self.assertEqual(self.service._schedule_android_notification.call_args_list, [
+            call(100000, 300, "To-do", "Не забывайте:\nНовый текст"),
+            call(100001, 1200, "To-do", "Не забывайте:\nНовый текст"),
+        ])
+
     def test_data_changes_refresh_android_and_web_stays_disabled(self):
         self.prepare_android()
+        self.settings.update(notification_important_enabled=False, notification_deadline_enabled=False)
         self.service.data_changed()
         self.service.page.run_task.assert_called_once_with(self.service.refresh_android_schedule)
         self.service.page.run_task.reset_mock()
@@ -184,6 +233,48 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         back.redact_statusB(task_id, True)
         back.undo_last_action()
         self.assertEqual(self.service.page.run_task.call_count, 3)
+
+
+class TaskReminderFormTests(unittest.TestCase):
+    def test_create_reset_and_edit(self):
+        front = make_front()
+        front._update_control = Mock()
+        front.open_page = Mock()
+
+        def checkbox():
+            form = front.open_page.call_args.args[1]
+            return next(c for c in walk_controls(form)
+                        if isinstance(c, ft.Checkbox) and c.label == "Напоминать о деле")
+
+        front.button_add_task.on_click(None)
+        self.assertFalse(checkbox().value)
+        checkbox().value = True
+        front.entry_task.value = "Прочитать"
+        front.entry_task.on_submit(None)
+        task, = front.back.read_tasks()
+        self.assertTrue(task["reminder"])
+        front.button_add_task.on_click(None)
+        self.assertFalse(checkbox().value)
+        card = next(c for c in front.tasks_cont.content.controls if c.key == task["id"])
+        task_menu(card).items[0].on_click(None)
+        self.assertTrue(checkbox().value)
+        checkbox().value = False
+        front.libs.entry_task.on_submit(None)
+        self.assertFalse(front.back.get_task(task["id"])["reminder"])
+
+    def test_special_tasks_only_remind_after_generation(self):
+        front = make_front()
+        front.back2.create_repeat_task("Повтор", metadata={"reminder": True})
+        front.back2.create_postponed_task("Отложенное", "01-01-2000", metadata={"reminder": True})
+        data = front.back._load()
+        data["repeat_tasks"][0]["last_date"] = "01-01-2000"
+        front.back._save(data)
+        service = NotificationService(Mock(), False, lambda: {}, data_provider=front.back._load)
+        self.assertEqual(service._notification_bodies({}, NOW), [])
+        front.check_and_add_repeat_task()
+        front.check_and_add_postponed_task()
+        self.assertEqual(service._notification_bodies({}, NOW),
+                         ["Не забывайте:\nПовтор", "Не забывайте:\nОтложенное"])
 
 
 class NotificationSettingsTests(unittest.TestCase):

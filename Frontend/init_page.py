@@ -147,7 +147,7 @@ class Front(NotesMixin, ReorderingMixin):
             self.phone,
             self.back2.read_settings,
             web=self.web,
-            data_provider=self.back._load,
+            data_provider=lambda: self.back._load(copy_data=False),
         )
 
         self.back.on_data_change = self._on_data_change
@@ -1195,6 +1195,7 @@ class Front(NotesMixin, ReorderingMixin):
         metadata = metadata or {}
         deadline = metadata.get("deadline") or ""
         collapse_task = self.libs.add_task_collapse_control(dialog, metadata.get("collapse", False))
+        reminder = self.libs.task_reminder_checkbox(metadata.get("reminder", False))
         deadline_days = metadata.get("deadline_days")
         if deadline_as_days and deadline_days in (None, "") and deadline:
             try:
@@ -1261,7 +1262,7 @@ class Front(NotesMixin, ReorderingMixin):
         )
         attachments.refresh()
         controls[-1:-1] = self.libs.create_task_form_sections(
-            [label, ft.Row([selector]), deadline_field, deadline_button, priority_row],
+            [reminder, label, ft.Row([selector]), deadline_field, deadline_button, priority_row],
             attachments.control,
         )
 
@@ -1292,6 +1293,7 @@ class Front(NotesMixin, ReorderingMixin):
                 "priority": priority_dropdown.value if selected == "priority" else "Неважно",
                 "info_type": selected,
                 "attachments": attachments.values(),
+                "reminder": reminder.value,
                 "collapse": should_collapse_task(dialog["entry_task"].value, collapse_task.value),
             }
         return values
@@ -1328,7 +1330,8 @@ class Front(NotesMixin, ReorderingMixin):
     def add_task(self, e, name_task, status, new_task, repeat_task, group_id=None,
                  mark_as_daily_repeat=False, created_date=None, deadline=None,
                  priority='Неважно', info_type='created_date', *, task_id=None,
-                 group_settings=None, defer_update=False, attachments=None, collapse=False):
+                 group_settings=None, defer_update=False, attachments=None, collapse=False,
+                 reminder=False):
         """Функция для добавления дела.
 
         mark_as_daily_repeat=True помечает создаваемое дело как ежедневное
@@ -1358,14 +1361,14 @@ class Front(NotesMixin, ReorderingMixin):
                     name_task, target_group_id, created_date=created_date,
                     deadline=deadline, priority=priority, info_type=info_type,
                     attachments=attachments,
-                    collapse=collapse,
+                    collapse=collapse, reminder=reminder,
                 )
                 if id_ is False:
                     return False
                 self.close_dlg("f")  # Закрываем диалог
             elif repeat_task:
                 id_ = self.back.saveB(name_task, target_group_id, is_repeat=mark_as_daily_repeat,
-                                      attachments=attachments, collapse=collapse)
+                                      attachments=attachments, collapse=collapse, reminder=reminder)
             else:
                 id_ = task_id if task_id is not None else self.back.read_id(name_task)
             # Храним и ищем исходное название; переносы нужны только для показа.
@@ -2382,7 +2385,7 @@ class Front(NotesMixin, ReorderingMixin):
             self.back.saveB(task, group_id, is_repeat=True,
                             deadline=metadata["deadline"], priority=metadata["priority"],
                             info_type=metadata["info_type"], attachments=metadata.get("attachments"),
-                            collapse=metadata.get("collapse", False))
+                            collapse=metadata.get("collapse", False), reminder=metadata.get("reminder", False))
 
         if tasks:
             self.cloud.alg_for_redact()
@@ -2504,7 +2507,7 @@ class Front(NotesMixin, ReorderingMixin):
             self.back.saveB(task, group_id, is_repeat=True,
                             deadline=metadata["deadline"], priority=metadata["priority"],
                             info_type=metadata["info_type"], attachments=metadata.get("attachments"),
-                            collapse=metadata.get("collapse", False))
+                            collapse=metadata.get("collapse", False), reminder=metadata.get("reminder", False))
 
         if tasks:
             self.cloud.alg_for_redact()

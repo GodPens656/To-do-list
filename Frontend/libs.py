@@ -924,6 +924,14 @@ class Fr_Libs:
         tile.maintain_state = True
         return section
 
+    def task_reminder_checkbox(self, enabled=False):
+        return ft.Checkbox(
+            label="Напоминать о деле",
+            value=enabled,
+            label_style=ft.TextStyle(size=self.text_size(14), color=self.TxtColor),
+            tooltip="На ПК и Android напоминание повторяется с интервалом из настроек уведомлений.",
+        )
+
     def create_task_form_sections(self, extra_controls, attachment_control):
         """Группирует необязательные поля дела в раскрываемые разделы."""
         return [

@@ -1,6 +1,7 @@
 import threading
 import datetime
 import asyncio
+import sys
 
 try:
     from plyer import notification as plyer_notification
@@ -12,7 +13,6 @@ class NotificationService:
     """Сервис периодических уведомлений."""
 
     TITLE = "To-do"
-    BODY = "Не забывайте о своих делах"
     NOTIFICATION_ID = 1001
     ANDROID_PRELOAD_COUNT = 11
 
@@ -38,6 +38,8 @@ class NotificationService:
         self.reload_event = threading.Event()
         self.worker = None
         self.last_scheduled_at = None
+        self._android_schedule = None
+        self._android_refill = None
 
     def setup(self):
         if self.web:
@@ -102,10 +104,12 @@ class NotificationService:
         except Exception as ex:
             print(f"Battery optimization exemption request failed: {ex}")
 
-    # ТЕПЕРЬ ОТСТУП ПРАВИЛЬНЫЙ (ровно 4 пробела от края класса):
     async def request_notification_permission(self):
+        if self.permission_handler is None or self.notification_permission_requested:
+            return
         try:
             await self.permission_handler.request(self.notification_permission.NOTIFICATION)
+            self.notification_permission_requested = True
         except Exception as ex:
             print(f"Notification permission request failed: {ex}")
 
@@ -126,12 +130,14 @@ class NotificationService:
     def stop(self):
         self.stop_event.set()
         self.reload_event.set()
+        if self._android_refill is not None:
+            self._android_refill.cancel()
 
     def reload_settings(self):
         if self.web:
             return
         if self.phone:
-            self.page.run_task(self.refresh_android_schedule)
+            self.page.run_task(self.refresh_android_schedule, True)
             return
 
         self.reload_event.set()
@@ -153,25 +159,27 @@ class NotificationService:
         """Обновляет заранее подготовленные напоминания после изменения дел."""
         if self.web or not self.phone or self.notifications is None:
             return
-        settings = self.settings_provider()
-        if (settings.get("notification_important_enabled", False)
-                or settings.get("notification_deadline_enabled", False)):
+        if self.settings_provider()["notifications_enabled"]:
             self.page.run_task(self.refresh_android_schedule)
 
     def _notification_bodies(self, settings, check_dt, data=None):
         important_enabled = settings.get("notification_important_enabled", False)
         deadline_enabled = settings.get("notification_deadline_enabled", False)
-        if not (important_enabled or deadline_enabled) or self.data_provider is None:
-            return [self.BODY]
         if data is None:
+            if self.data_provider is None:
+                return []
             data = self.data_provider()
 
+        bodies = []
         important_groups = set()
         deadline_groups = set()
         tomorrow = check_dt.date() + datetime.timedelta(days=1)
         for task in data.get("tasks", []):
             if task.get("status"):
                 continue
+            if task.get("reminder") and task.get("name"):
+                name = task["name"].replace("{N}", "\n")
+                bodies.append(f"Не забывайте:\n{name}")
             group_id = task.get("group", "default")
             if important_enabled and task.get("priority") == "Очень важно":
                 important_groups.add(group_id)
@@ -183,7 +191,6 @@ class NotificationService:
                 if deadline == tomorrow:
                     deadline_groups.add(group_id)
 
-        bodies = []
         for group in data.get("groups", []):
             if group.get("type", "tasks") != "tasks":
                 continue
@@ -193,7 +200,7 @@ class NotificationService:
                 bodies.append(f'Есть очень важные дела в группе "{group_name}"')
             if group_id in deadline_groups:
                 bodies.append(f'Скоро подойдёт дедлайн в делах группы "{group_name}"')
-        return bodies or [self.BODY]
+        return bodies
 
     def _parse_time(self, value, fallback):
         try:
@@ -235,7 +242,7 @@ class NotificationService:
         )
 
         if start_time == end_time:
-            return candidate_dt + datetime.timedelta(days=3650)
+            return None
         if not self._is_in_quiet_hours(candidate_dt, settings):
             return candidate_dt
 
@@ -257,50 +264,64 @@ class NotificationService:
             tzinfo=candidate_dt.tzinfo,
         )
 
-    async def refresh_android_schedule(self):
+    async def refresh_android_schedule(self, reset_interval=False):
         if not self.phone or self.notifications is None:
             return
         # Изменения настроек и дел могут прийти во время планирования.
         async with self._schedule_lock:
-            await self._refresh_android_schedule()
+            await self._refresh_android_schedule(reset_interval)
 
-    async def _refresh_android_schedule(self):
-
-        # ИСПРАВЛЕНИЕ: Сначала ВСЕГДА отменяем все старые уведомления
-        try:
-            await self.notifications.cancel_all_notifications()
-            print("All previously scheduled Android notifications canceled.")
-        except Exception as ex:
-            print(f"Cancel all failed: {ex}")
-
-        # Теперь проверяем настройки
+    async def _refresh_android_schedule(self, reset_interval):
         settings = self.settings_provider()
-        if not settings["notifications_enabled"]:
-            self.last_scheduled_at = None
-            print("Notifications are disabled. Schedule cleared.")
-            return
-
-        interval = settings["notification_interval"]
-        schedule_count = self.ANDROID_PRELOAD_COUNT
-
-        print(f"Scheduling {schedule_count} new notifications with interval {interval} min...")
         now = datetime.datetime.now()
-        next_time = now + datetime.timedelta(minutes=interval)
-        data = self.data_provider() if self.data_provider is not None else None
-        notification_id = 100000
+        interval = datetime.timedelta(minutes=settings["notification_interval"])
+        pending = {when: bodies for when, bodies in (self._android_schedule or {}).items()
+                   if when > now}
+        schedule = {}
+        if settings["notifications_enabled"]:
+            # Cloud refreshes and task edits must not restart the interval.
+            next_time = now + interval if reset_interval else next(iter(pending), now + interval)
+            data = self.data_provider() if self.data_provider is not None else {}
+            for _ in range(self.ANDROID_PRELOAD_COUNT):
+                next_time = self._next_allowed_datetime(next_time, settings)
+                if next_time is None:
+                    break
+                schedule[next_time] = self._notification_bodies(settings, next_time, data)
+                next_time += interval
 
-        for index in range(schedule_count):
-            next_time = self._next_allowed_datetime(next_time, settings)
-            delay_seconds = max(1, int((next_time - now).total_seconds()))
-            for body in self._notification_bodies(settings, next_time, data):
-                await self._schedule_android_notification(
-                    notification_id, delay_seconds, self.TITLE, body,
-                )
-                notification_id += 1
-            next_time += datetime.timedelta(minutes=interval)
+        if self._android_schedule is None or schedule != pending:
+            # The first refresh also clears alarms left by an older app version.
+            try:
+                await self.notifications.cancel_all_notifications()
+                notification_id = 100000
+                for when, bodies in schedule.items():
+                    for body in bodies:
+                        delay = max(1, int((when - datetime.datetime.now()).total_seconds()))
+                        await self._schedule_android_notification(
+                            notification_id, delay, self.TITLE, body,
+                        )
+                        notification_id += 1
+            except Exception as ex:
+                print(f"Android notification schedule failed: {ex}")
+                self._android_schedule = None
+                self._refill_android_after(30)
+                return
+        self._android_schedule = schedule
+        self.last_scheduled_at = next(reversed(schedule), None)
+        if self.last_scheduled_at is not None:
+            # Refill before the last preloaded alarm, even on an idle screen.
+            refill_at = max(next(iter(schedule)), self.last_scheduled_at - interval / 2)
+            self._refill_android_after((refill_at - datetime.datetime.now()).total_seconds())
+        elif self._android_refill is not None:
+            self._android_refill.cancel()
 
-        self.last_scheduled_at = next_time - datetime.timedelta(minutes=interval)
-        print(f"Last notification scheduled at: {self.last_scheduled_at}")
+    def _refill_android_after(self, seconds):
+        if self._android_refill is not None:
+            self._android_refill.cancel()
+        if not self.stop_event.is_set():
+            self._android_refill = asyncio.get_running_loop().call_later(
+                max(1, seconds), self.page.run_task, self.refresh_android_schedule,
+            )
 
     def _run(self):
         while not self.stop_event.is_set():
@@ -358,15 +379,12 @@ class NotificationService:
         if not self.notification_permission_requested:
             await self.request_notification_permission()
 
-        try:
-            await self.notifications.schedule_notification(
-                id=notification_id,
-                title=title,
-                body=body,
-                delay_seconds=delay_seconds,
-            )
-        except Exception as ex:
-            print(f"Local scheduled notification failed: {ex}")
+        await self.notifications.schedule_notification(
+            id=notification_id,
+            title=title,
+            body=body,
+            delay_seconds=delay_seconds,
+        )
 
     def show_desktop_notification(self, title, body):
         if plyer_notification is None:
@@ -374,6 +392,11 @@ class NotificationService:
             return
 
         try:
+            # Plyer's Windows balloon has room for 255 UTF-16 code units.
+            if sys.platform == "win32":
+                encoded = body.encode("utf-16-le")
+                if len(encoded) > 510:
+                    body = encoded[:508].decode("utf-16-le", errors="ignore") + "…"
             plyer_notification.notify(
                 title=title,
                 message=body,

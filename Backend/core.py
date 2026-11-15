@@ -15,6 +15,7 @@ from .data_archive import create_data_archive, read_data_archive
 from .storage import replace_all_sections
 from .ordering import OrderingMixin
 from .timing import timed
+from .version import APP_VERSION
 
 
 DEFAULT_WEB_TIMEZONE = "Europe/Moscow"
@@ -60,7 +61,7 @@ class Backend(OrderingMixin):
         self.web = web_store is not None
         self.Save_in_time = ""
         self.phone = False
-        self.version = '3.15.0'
+        self.version = APP_VERSION
         if self.web:
             self.store = web_store
             self.cloud = cloud or Cloud(web_store=web_store)

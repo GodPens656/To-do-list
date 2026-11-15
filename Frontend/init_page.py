@@ -36,6 +36,7 @@ from Backend.timing import timed
 from .typography import apply_typography
 from .glass import GlassHost, glass_background
 from .wallpaper import WallpaperManager
+from .app_updates import ApplicationUpdatePrompt
 
 
 
@@ -159,11 +160,13 @@ class Front(NotesMixin, ReorderingMixin):
             self.back2,
             self.refresh_tasks_silent,
         )
+        self.application_updates = ApplicationUpdatePrompt(self.page, lambda: self.libs)
 
         def _on_close(e=None):
             self._stop_loading_game()
             self.notification_service.stop()
             self.auto_update_service.stop()
+            self.application_updates.stop()
             self.wallpaper.stop()
 
         self.page.on_close = _on_close
@@ -222,6 +225,7 @@ class Front(NotesMixin, ReorderingMixin):
 
         if not self.web:
             self.page.update()
+        self.application_updates.start()
 
     def _on_data_change(self):
         # Invalidate even when Undo restores the same records as the last
@@ -676,6 +680,7 @@ class Front(NotesMixin, ReorderingMixin):
         if not self.cloud.check_user_data():
             self.open_auth_dialog()
         self.page.run_task(self.show_offline_start_dialog)
+        self.application_updates.allow_prompt()
 
     async def _apply_upload_indicator_state(self, is_uploading):
         """Обновляет индикатор фоновой загрузки на облако.

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import logging
 import platform
 import re
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -20,6 +20,7 @@ class AppUpdate:
     version: str
     asset_name: str
     download_url: str
+    release_url: str
 
 
 def _version_key(value):
@@ -116,4 +117,6 @@ def check_for_update(current_version, target, *, machine=None):
     asset = _select_asset(assets, target, machine if machine is not None else platform.machine())
     if asset is None:
         return None
-    return AppUpdate(version.strip().lstrip("vV"), *asset)
+    tag = version.strip()
+    release_url = f"https://github.com/{REPOSITORY}/releases/tag/{quote(tag, safe='')}"
+    return AppUpdate(tag.lstrip("vV"), *asset, release_url)

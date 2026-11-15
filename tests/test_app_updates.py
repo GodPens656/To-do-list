@@ -37,6 +37,9 @@ class AppUpdateTests(unittest.TestCase):
                 self.assertEqual(update.version, "3.16.0")
                 self.assertEqual(update.asset_name, filename)
                 self.assertEqual(update.download_url, DOWNLOAD_PREFIX + filename)
+                self.assertEqual(
+                    update.release_url, "https://github.com/GodPens656/To-do-list/releases/tag/3.16.0",
+                )
         self.request.assert_called_with(
             LATEST_RELEASE_URL,
             headers={"Accept": "application/vnd.github+json", "User-Agent": "To-do-list/3.15.0",
@@ -49,7 +52,9 @@ class AppUpdateTests(unittest.TestCase):
                                 ("3.15.0", "4.0.0+build.1")):
             with self.subTest(current=current, latest=latest):
                 self.release["tag_name"] = latest
-                self.assertIsNotNone(self.check(current=current))
+                update = self.check(current=current)
+                self.assertIsNotNone(update)
+                self.assertEqual(update.release_url.rsplit("/", 1)[1], latest.replace("+", "%2B"))
 
     def test_equal_older_and_build_metadata_do_not_offer_a_downgrade(self):
         for latest in ("3.15.0", "v3.15", "3.15.0+build.2", "3.14.0", "2.99.99"):

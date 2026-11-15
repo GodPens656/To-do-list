@@ -106,6 +106,10 @@ class ApplicationUpdatePrompt:
                         "Загрузка откроется в браузере. После скачивания установите обновление.",
                         color=libs.TxtColor, size=libs.text_size(14),
                     ),
+                    libs.linked_text(
+                        f"Ознакомиться, что изменено вы можете здесь: {update.release_url}",
+                        color=libs.TxtColor, size=libs.text_size(14),
+                    ),
                     status,
                 ], tight=True, spacing=12),
             ),

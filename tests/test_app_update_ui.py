@@ -10,7 +10,11 @@ from Frontend.app_updates import ApplicationUpdatePrompt, check_for_update
 from test_ui_state import make_front
 
 
-UPDATE = AppUpdate("3.16.0", "To-Do.apk", "https://github.com/GodPens656/To-do-list/releases/download/3.16.0/To-Do.apk")
+UPDATE = AppUpdate(
+    "3.16.0", "To-Do.apk",
+    "https://github.com/GodPens656/To-do-list/releases/download/3.16.0/To-Do.apk",
+    "https://github.com/GodPens656/To-do-list/releases/tag/3.16.0",
+)
 
 
 class AppUpdateUiTests(unittest.IsolatedAsyncioTestCase):
